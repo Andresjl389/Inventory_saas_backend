@@ -1,0 +1,16 @@
+import uuid
+from typing import Protocol
+
+from app.domain.tenants.entities.company_member import CompanyMember
+
+
+class CompanyMemberRepository(Protocol):
+    async def get(self, company_id: uuid.UUID, user_id: uuid.UUID) -> CompanyMember | None: ...
+
+    async def list_by_company(self, company_id: uuid.UUID) -> list[CompanyMember]: ...
+
+    async def list_by_user(self, user_id: uuid.UUID) -> list[CompanyMember]: ...
+
+    async def add(self, member: CompanyMember) -> CompanyMember: ...
+
+    async def update(self, member: CompanyMember) -> CompanyMember: ...
