@@ -10,6 +10,7 @@ from app.infrastructure.database.models.authorization import (
 )
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
 from app.infrastructure.database.models.file import FileModel
+from app.infrastructure.database.models.imports import ImportErrorModel, ImportJobModel
 from app.infrastructure.database.models.inventory import (
     ProductStockModel,
     StockMovementModel,
@@ -34,6 +35,8 @@ __all__ = [
     "CompanyModel",
     "CustomerModel",
     "FileModel",
+    "ImportErrorModel",
+    "ImportJobModel",
     "NotificationModel",
     "PermissionModel",
     "PlanModel",

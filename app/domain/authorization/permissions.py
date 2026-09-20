@@ -58,6 +58,8 @@ CATALOG: tuple[PermissionDefinition, ...] = (
     PermissionDefinition("purchases.read", "purchases", "View purchases"),
     PermissionDefinition("purchases.create", "purchases", "Create and complete purchases"),
     PermissionDefinition("purchases.cancel", "purchases", "Cancel purchases"),
+    PermissionDefinition("imports.read", "imports", "View imports and their errors"),
+    PermissionDefinition("imports.run", "imports", "Upload files and load them into the company"),
     PermissionDefinition("files.read", "files", "View and download attachments"),
     PermissionDefinition("files.write", "files", "Upload and delete attachments"),
     PermissionDefinition("reports.read", "reports", "View reports"),
@@ -92,6 +94,8 @@ SYSTEM_ROLE_PERMISSIONS: dict[SystemRole, frozenset[str]] = {
             "purchases.cancel",
             "files.read",
             "files.write",
+            "imports.read",
+            "imports.run",
             "reports.read",
         }
     ),
@@ -107,6 +111,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[SystemRole, frozenset[str]] = {
             "sales.read",
             "sales.create",
             "files.read",
+            "imports.read",
         }
     ),
 }

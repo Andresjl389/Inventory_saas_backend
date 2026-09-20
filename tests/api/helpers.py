@@ -132,3 +132,38 @@ async def upload(
         files={"file": (filename, content, content_type)},
         data=data,
     )
+
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def workbook_bytes(rows: list[list], sheets: dict[str, list[list]] | None = None) -> bytes:
+    """Build an .xlsx in memory. `sheets` builds a multi-sheet workbook instead."""
+    import io
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    if sheets is None:
+        sheet = book.active
+        for row in rows:
+            sheet.append(row)
+    else:
+        book.remove(book.active)
+        for name, sheet_rows in sheets.items():
+            sheet = book.create_sheet(name[:31])
+            for row in sheet_rows:
+                sheet.append(row)
+
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+async def start_import(client, hdrs: dict, *, entity: str, payload: bytes, filename="datos.xlsx"):
+    return await client.post(
+        "/api/v1/imports",
+        headers=hdrs,
+        files={"file": (filename, payload, XLSX_MEDIA_TYPE)},
+        data={"entity": entity},
+    )

@@ -1,0 +1,133 @@
+"""Matching the columns of somebody's spreadsheet to our fields.
+
+This is the step that makes an import feel like Power Query: the file is read,
+its headers become labels, and each one is proposed against a target field with
+a confidence. The user confirms or corrects; nothing is guessed silently at
+load time.
+"""
+
+import re
+import unicodedata
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+
+from app.domain.imports.schemas import EntitySchema
+
+# Below this, a guess is worse than no guess: the column is left unmapped and
+# the user picks from the list.
+MIN_CONFIDENCE = 0.72
+
+# Above this the match is an exact name or close to it. Between the two, the
+# suggestion is usable but worth a glance -- "centro de costo" looks a lot like
+# a cost column and is not one. The mapping screen marks these for review.
+CONFIDENT = 0.9
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def normalise_header(text: str) -> str:
+    """Fold a header to something comparable: no accents, no case, no noise."""
+    stripped = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode()
+    return _NON_ALNUM.sub(" ", stripped.lower()).strip()
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnSuggestion:
+    source: str
+    target: str | None
+    confidence: float
+    reason: str
+
+    @property
+    def needs_review(self) -> bool:
+        return self.target is not None and self.confidence < CONFIDENT
+
+
+def _token_containment(candidate: set[str], header: set[str]) -> float:
+    """How well a candidate name sits inside a header, by words.
+
+    A plain substring test is too generous: "costo" is inside "centro de costo
+    interno", which is not a cost column. Scoring by whole words and penalising
+    the words the header adds keeps "precio venta" matching "precio de venta
+    unitario" while rejecting that one.
+    """
+    if not candidate or not header:
+        return 0.0
+    shared = candidate & header
+    if not shared:
+        return 0.0
+    coverage = len(shared) / len(candidate)
+    extra = len(header - candidate) / len(header)
+    return coverage * (1 - 0.5 * extra)
+
+
+def _candidates(schema: EntitySchema) -> list[tuple[str, str]]:
+    """(normalised text, target key) for every name a field answers to."""
+    pairs: list[tuple[str, str]] = []
+    for spec in schema.fields:
+        pairs.append((normalise_header(spec.key), spec.key))
+        pairs.append((normalise_header(spec.label), spec.key))
+        pairs.extend((normalise_header(alias), spec.key) for alias in spec.aliases)
+    return pairs
+
+
+def suggest_mapping(headers: list[str], schema: EntitySchema) -> list[ColumnSuggestion]:
+    """Propose a target for each column, best matches first.
+
+    A target is only ever proposed once: two columns that both look like
+    "precio" cannot silently both map to sale_price, which would make the
+    import depend on column order.
+    """
+    candidates = _candidates(schema)
+    scored: list[tuple[float, int, str, str, str]] = []
+
+    for index, header in enumerate(headers):
+        normalised = normalise_header(header)
+        if not normalised:
+            continue
+
+        header_tokens = set(normalised.split())
+
+        best_key, best_score, best_reason = None, 0.0, ""
+        for candidate, key in candidates:
+            if not candidate:
+                continue
+            if candidate == normalised:
+                score, reason = 1.0, "exact"
+            else:
+                containment = _token_containment(set(candidate.split()), header_tokens)
+                similarity = SequenceMatcher(None, normalised, candidate).ratio()
+                score, reason = (
+                    (containment, "contains")
+                    if containment >= similarity
+                    else (similarity, "similar")
+                )
+            if score > best_score:
+                best_key, best_score, best_reason = key, score, reason
+
+        if best_key and best_score >= MIN_CONFIDENCE:
+            scored.append((best_score, index, header, best_key, best_reason))
+
+    taken: set[str] = set()
+    resolved: dict[int, ColumnSuggestion] = {}
+    for score, index, header, key, reason in sorted(scored, key=lambda item: -item[0]):
+        if key in taken:
+            continue
+        taken.add(key)
+        resolved[index] = ColumnSuggestion(
+            source=header, target=key, confidence=round(score, 3), reason=reason
+        )
+
+    return [
+        resolved.get(
+            index,
+            ColumnSuggestion(source=header, target=None, confidence=0.0, reason="unmatched"),
+        )
+        for index, header in enumerate(headers)
+    ]
+
+
+def missing_required(mapping: dict[str, str], schema: EntitySchema) -> list[str]:
+    """Required target fields no column feeds."""
+    mapped = set(mapping.values())
+    return [key for key in schema.required_keys if key not in mapped]

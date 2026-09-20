@@ -10,6 +10,7 @@ from app.domain.billing.entities.plan import Plan, Subscription
 from app.domain.customers.entities.customer import Customer
 from app.domain.files.entities.stored_file import StoredFile
 from app.domain.identity.entities.user import User
+from app.domain.imports.entities.import_job import ImportJob, ImportRowError
 from app.domain.inventory.entities.product_stock import ProductStock
 from app.domain.inventory.entities.stock_movement import StockMovement
 from app.domain.inventory.entities.warehouse import Warehouse
@@ -24,6 +25,7 @@ from app.domain.tenants.entities.company_member import CompanyMember
 from app.infrastructure.database.models.authorization import PermissionModel, RoleModel
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
 from app.infrastructure.database.models.file import FileModel
+from app.infrastructure.database.models.imports import ImportErrorModel, ImportJobModel
 from app.infrastructure.database.models.inventory import (
     ProductStockModel,
     StockMovementModel,
@@ -347,4 +349,38 @@ def stored_file_to_domain(model: FileModel) -> StoredFile:
         storage_key=model.storage_key,
         checksum=model.checksum,
         uploaded_by=model.uploaded_by,
+    )
+
+
+def import_job_to_domain(model: ImportJobModel) -> ImportJob:
+    return ImportJob(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        company_id=model.company_id,
+        entity=model.entity,
+        file_id=model.file_id,
+        filename=model.filename,
+        status=model.status,
+        mapping=dict(model.mapping or {}),
+        options=dict(model.options or {}),
+        detected_columns=list(model.detected_columns or []),
+        stats=dict(model.stats or {}),
+        failure_reason=model.failure_reason,
+        created_by=model.created_by,
+    )
+
+
+def import_error_to_domain(model: ImportErrorModel) -> ImportRowError:
+    return ImportRowError(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        company_id=model.company_id,
+        job_id=model.job_id,
+        row_number=model.row_number,
+        column=model.column,
+        field_key=model.field_key,
+        value=model.value,
+        message=model.message,
     )

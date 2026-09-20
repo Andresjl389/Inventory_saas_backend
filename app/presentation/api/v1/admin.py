@@ -13,16 +13,23 @@ them on the same single-tenant path as everyone else.
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, File, Query, UploadFile, status
+from fastapi.responses import Response
 
 from app.application.audit.dto.audit import AuditPageDTO, ListAuditQuery
 from app.application.audit.use_cases.read_audit_log import ReadAuditLogUseCase
+from app.application.imports.use_cases.onboarding import (
+    OnboardCompanyUseCase,
+    outcomes_to_payload,
+)
 from app.application.platform.dto.admin import (
     AdminCompanyDTO,
     AdminCompanyPageDTO,
     AdminUserDTO,
     AdminUserPageDTO,
     AssignSubscriptionCommand,
+    CompanyOverviewDTO,
+    CompanySupervisionPageDTO,
     CreatePlanCommand,
     CreateUserCommand,
     ListCompaniesQuery,
@@ -54,22 +61,34 @@ from app.application.platform.use_cases.manage_users import (
     ListUsersUseCase,
     UpdateUserUseCase,
 )
+from app.application.platform.use_cases.supervise_companies import (
+    GetCompanyOverviewUseCase,
+    SuperviseCompaniesUseCase,
+)
 from app.application.tenants.dto.company import CompanyMemberDTO
 from app.application.tenants.use_cases.manage_members import ListCompanyMembersUseCase
 from app.domain.audit.entities.audit_entry import AuditAction
 from app.domain.shared.pagination import MAX_PAGE_SIZE
 from app.domain.tenants.entities.company import CompanyStatus
 from app.domain.tenants.tenant_context import TenantContext
+from app.infrastructure.database.tenant_context import set_current_company
+from app.infrastructure.imports.template import build_onboarding_workbook
+from app.presentation.api.dependencies.admin_scope import AdminCompanyScopeDep
+from app.presentation.api.dependencies.database import SessionDep
 from app.presentation.api.dependencies.platform import PlatformAdminDep
 from app.presentation.api.dependencies.repositories import (
     AuditRepoDep,
     AuditServiceDep,
+    CompanyOverviewDep,
     CompanyRepoDep,
+    LoaderRepositoriesDep,
     MemberRepoDep,
     PlanRepoDep,
     PlatformStatsDep,
     RoleRepoDep,
+    SpreadsheetReaderDep,
     SubscriptionRepoDep,
+    UnitOfWorkDep,
     UserRepoDep,
 )
 
@@ -125,6 +144,39 @@ async def list_companies(
     return await ListCompaniesUseCase(companies).execute(query)
 
 
+# Declared before /companies/{company_id}: a static segment has to win over a
+# path parameter, or "supervision" is parsed as a company id.
+@router.get("/companies/supervision", response_model=CompanySupervisionPageDTO)
+async def supervise_companies(
+    session: SessionDep,
+    admin: PlatformAdminDep,
+    companies: CompanyRepoDep,
+    overview: CompanyOverviewDep,
+    subscriptions: SubscriptionRepoDep,
+    plans: PlanRepoDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 20,
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    company_status: Annotated[CompanyStatus | None, Query(alias="status")] = None,
+    with_metrics: Annotated[bool, Query()] = True,
+) -> CompanySupervisionPageDTO:
+    """The supervision table: every company with its plan and live numbers.
+
+    With `with_metrics=true` each company on the page is entered in turn to
+    read its own figures -- sequentially, never in one cross-tenant query.
+    Turn it off for a fast listing.
+    """
+
+    async def enter(company_id: uuid.UUID) -> None:
+        await set_current_company(session, company_id)
+
+    use_case = SuperviseCompaniesUseCase(companies, overview, subscriptions, plans, enter)
+    return await use_case.execute(
+        ListCompaniesQuery(page=page, size=size, search=search, status=company_status),
+        with_metrics=with_metrics,
+    )
+
+
 @router.get("/companies/{company_id}", response_model=AdminCompanyDTO)
 async def get_company(
     company_id: uuid.UUID, admin: PlatformAdminDep, companies: CompanyRepoDep
@@ -148,6 +200,69 @@ async def update_company(
     return await UpdateCompanyUseCase(companies, audit).execute(
         company_id, command, actor_id=admin.id
     )
+
+
+@router.get("/companies/{company_id}/overview", response_model=CompanyOverviewDTO)
+async def company_overview(
+    scope: AdminCompanyScopeDep,
+    companies: CompanyRepoDep,
+    overview: CompanyOverviewDep,
+    subscriptions: SubscriptionRepoDep,
+    plans: PlanRepoDep,
+    window_days: Annotated[int, Query(ge=1, le=365)] = 30,
+) -> CompanyOverviewDTO:
+    """One company in detail: members, catalogue, stock value, sales in the
+    window, and where it stands against its plan's limits."""
+    use_case = GetCompanyOverviewUseCase(companies, overview, subscriptions, plans)
+    return await use_case.execute(scope.company_id, window_days=window_days)
+
+
+@router.get("/onboarding/template")
+async def onboarding_template(admin: PlatformAdminDep) -> Response:
+    """One workbook with a sheet per entity, in the order they load.
+
+    Fill what you have, leave the rest empty, upload it to a company.
+    """
+    return Response(
+        content=build_onboarding_workbook(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="carga_inicial_empresa.xlsx"'},
+    )
+
+
+@router.post("/companies/{company_id}/onboarding")
+async def onboard_company(
+    scope: AdminCompanyScopeDep,
+    unit_of_work: UnitOfWorkDep,
+    repositories: LoaderRepositoriesDep,
+    reader: SpreadsheetReaderDep,
+    audit: AuditServiceDep,
+    file: Annotated[UploadFile, File(description="Workbook with one sheet per entity")],
+    dry_run: Annotated[bool, Query()] = False,
+) -> dict:
+    """Load a whole company from one workbook.
+
+    Sheets are matched by name, mapped automatically from their headers and
+    loaded in dependency order inside a single savepoint: either the company is
+    onboarded or nothing changed. `dry_run=true` reports what would happen.
+    """
+    payload = await file.read()
+    outcomes = await OnboardCompanyUseCase(unit_of_work, repositories, reader).execute(
+        payload=payload, tenant=scope, dry_run=dry_run
+    )
+    result = outcomes_to_payload(outcomes)
+
+    if not dry_run:
+        await audit.record(
+            AuditAction.COMPANY_UPDATED,
+            actor_user_id=scope.user_id,
+            company_id=scope.company_id,
+            entity_type="onboarding",
+            entity_id=scope.company_id,
+            payload={"filename": file.filename, "totals": result["totals"]},
+        )
+
+    return {"dry_run": dry_run, **result}
 
 
 @router.get("/companies/{company_id}/members", response_model=list[CompanyMemberDTO])

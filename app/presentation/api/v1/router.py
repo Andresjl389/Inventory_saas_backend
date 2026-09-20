@@ -7,6 +7,7 @@ from app.presentation.api.v1 import (
     companies,
     customers,
     files,
+    imports,
     inventory,
     notifications,
     products,
@@ -33,4 +34,5 @@ api_router.include_router(purchases.router)
 api_router.include_router(reports.router)
 api_router.include_router(notifications.router)
 api_router.include_router(files.router)
+api_router.include_router(imports.router)
 api_router.include_router(admin.router)

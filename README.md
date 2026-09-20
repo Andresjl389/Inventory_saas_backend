@@ -4,13 +4,14 @@ Backend multi-tenant construido sobre la arquitectura descrita en `BACKEND.md`:
 FastAPI + PostgreSQL con Row Level Security, arquitectura hexagonal y aislamiento
 de tenants en tres capas.
 
-> Estado: **Fases 1 a 5 implementadas**. 57 endpoints, 22 tablas, 141 tests.
+> Estado: **Fases 1 a 5 implementadas**. 70 endpoints, 24 tablas, 225 tests.
 > Identity, empresas, miembros, tenant context, RLS, categorías, productos,
 > bodegas, inventario con ledger, clientes, proveedores, ventas, compras,
 > **super admin de plataforma**, roles y permisos en base de datos, auditoría,
 > reportes, notificaciones, jobs en background, planes y suscripciones.
-> El almacenamiento de archivos funciona sobre una carpeta local; el adaptador
-> S3 es lo único que falta de la arquitectura original.
+> Incluye consola de supervisión de empresas y carga masiva desde Excel con
+> mapeo de columnas. El almacenamiento de archivos va sobre una carpeta local;
+> el adaptador S3 es lo único que falta de la arquitectura original.
 
 ---
 
@@ -107,6 +108,10 @@ aprovisionar: si algo falla, se revierte entera.
 | Endpoint | Para qué |
 |---|---|
 | `GET /admin/stats` | Tablero: empresas y usuarios por estado |
+| `GET /admin/companies/supervision` | **Tabla de supervisión**: cada empresa con su plan y sus números reales |
+| `GET /admin/companies/{id}/overview` | Una empresa en detalle, con su uso contra los límites del plan |
+| `GET /admin/onboarding/template` | Libro con una hoja por entidad |
+| `POST /admin/companies/{id}/onboarding` | **Cargar una empresa entera** desde ese libro |
 | `POST /admin/companies` | Aprovisionar empresa + dueño + plan |
 | `GET /admin/companies` | Todas las empresas, con búsqueda y filtro por estado |
 | `PATCH /admin/companies/{id}` | Editar, **suspender** o reactivar |
@@ -119,6 +124,31 @@ aprovisionar: si algo falla, se revierte entera.
 Suspender una empresa la deja fuera en la siguiente petición de sus miembros
 (`403 INVALID_COMPANY`), pero el operador sigue pudiendo entrar — que suele ser
 exactamente el motivo por el que la está mirando.
+
+### Supervisar sin romper el aislamiento
+
+```bash
+curl "localhost:8000/api/v1/admin/companies/supervision?with_metrics=true" \
+  -H "Authorization: Bearer $ADMIN"
+```
+
+Devuelve, por empresa: plan y estado de la suscripción, miembros, productos,
+bodegas, clientes, proveedores, ventas y facturación de los últimos 30 días,
+unidades y valor del inventario a costo, y cuándo fue la última venta.
+
+Las tablas de negocio **no** tienen escape de RLS para el operador, así que
+estos números no salen de una consulta entre empresas: cada empresa de la
+página se **entra** por turno con su propio contexto de tenant y se consulta
+como lo haría una petición suya. Es el único punto del sistema donde una
+petición de operador toca más de una empresa, lo hace en secuencia y está
+acotado al tamaño de la página. `with_metrics=false` se salta ese trabajo.
+
+`GET /admin/companies/{id}/overview` hace lo mismo para una sola, y añade el
+uso contra los topes del plan:
+
+```json
+{"usage": [{"resource": "warehouses", "used": 2, "limit": 5, "over_limit": false}]}
+```
 
 ### Hasta dónde llega el escape de RLS
 
@@ -269,6 +299,7 @@ app/
 │   ├── purchases/       Purchase (agregado con PurchaseItem)
 │   ├── audit/           AuditEntry
 │   ├── files/           StoredFile, puerto FileStorage, generación de claves
+│   ├── imports/         catálogo de campos, coerción, mapeo de columnas
 │   ├── billing/         Plan, Subscription
 │   ├── notifications/   Notification
 │   └── reports/         puertos de lectura (agregaciones)
@@ -285,12 +316,14 @@ app/
 │   ├── platform/        aprovisionar empresas, usuarios, planes (super admin)
 │   ├── audit/           AuditService + lectura
 │   ├── files/           subir, listar, descargar, borrar adjuntos
+│   ├── imports/         analizar, mapear, simular, cargar + onboarding
 │   ├── reports/         ventas, valorización, stock bajo
 │   └── notifications/   bandeja de la empresa
 │
 ├── infrastructure/    Detalles reemplazables.
 │   ├── database/        modelos SQLAlchemy, repositorios, sesión,
 │   │                    tenant_context.py, rls.py, migration_helpers.py
+│   ├── imports/         lector .xlsx/.csv, plantillas
 │   ├── storage/         adaptador local (atómico) + factory
 │   └── jobs/            worker Arq, stock bajo, barrido de huérfanos
 │
@@ -394,7 +427,8 @@ alembic/versions/
 ├── 0009_audit_logs.py              audit_logs (append-only)
 ├── 0010_billing.py                 plans (sembrados), subscriptions
 ├── 0011_notifications.py           notifications, products.min_stock
-└── 0012_files.py                   files + permisos files.read / files.write
+├── 0012_files.py                   files + permisos files.read / files.write
+└── 0013_imports.py                 import_jobs, import_errors + permisos
 ```
 
 La migración 0008 siembra desde `app.domain.authorization.permissions`, así que
@@ -609,7 +643,142 @@ ni los casos de uso, ni la tabla. Hoy `factory.py` falla ruidosamente si pides
 
 ---
 
-## 11. Cómo añadir un módulo nuevo
+## 11. Carga masiva desde Excel
+
+El problema real no es leer un .xlsx: es que los datos llegan como llegan.
+Encabezados que nadie nombró igual dos veces, `$ 15.000` junto a `8.500,50`,
+un título suelto en A1, filas en blanco en la mitad, columnas repetidas, "SÍ"
+donde va un booleano. El importador está construido alrededor de eso.
+
+### Dos fases, y esa es la idea
+
+```text
+1. Subir      POST /imports  (archivo + entidad)
+                 → lee el archivo, propone un mapeo, muestra una vista previa
+                 → NO escribe nada
+2. Ajustar    PATCH /imports/{id}/mapping
+                 → el usuario corrige columnas y, si hace falta, fija el
+                   separador decimal o el formato de fecha
+3. Simular    POST /imports/{id}/validate
+                 → ejecuta la carga real dentro de un savepoint y lo revierte
+4. Cargar     POST /imports/{id}/run
+```
+
+La simulación **no** es una segunda validación más débil: corre el mismo
+cargador y deshace el savepoint. Por eso sus números incluyen las restricciones
+de la base — SKU único, claves foráneas, checks — que una validación aparte
+tendría que reimplementar y acabaría contradiciendo.
+
+### El mapeo (las "etiquetas")
+
+La respuesta de `POST /imports` trae lo que una pantalla tipo Power Query
+necesita:
+
+```json
+{
+  "columns": [
+    {"source": "Referencia", "suggested_target": "sku", "confidence": 1.0,
+     "reason": "exact", "needs_review": false, "samples": ["mar-01", "DES-02"]},
+    {"source": "Centro de costo interno", "suggested_target": null,
+     "confidence": 0.0, "reason": "unmatched", "samples": ["CC-900"]}
+  ],
+  "target_fields": [{"key": "sku", "label": "SKU", "required": true, "...": "..."}],
+  "missing_required": [],
+  "preview": [{"row_number": 4, "cells": [
+    {"field_key": "sale_price", "raw": "$ 15.000", "value": "15000"}]}]
+}
+```
+
+- El emparejamiento ignora acentos, mayúsculas y puntuación, y conoce sinónimos
+  de otros sistemas: `referencia`, `pvp`, `familia`, `ean`, `nit`, `celular`…
+- **Un campo destino nunca se propone dos veces**: si no, con dos columnas
+  llamadas "Precio" el resultado dependería del orden.
+- `needs_review` marca los aciertos plausibles pero no seguros. "Centro de
+  costo interno" se parece a una columna de costo y no lo es; por eso se sugiere
+  con poca confianza en vez de aceptarse en silencio.
+- La **vista previa muestra el valor crudo y el convertido lado a lado**, que es
+  lo que hace visible un separador mal interpretado antes de escribir nada.
+
+### Números y textos desordenados
+
+| Entra | Sale |
+|---|---|
+| `$ 15.000` | `15000` |
+| `1.234,56` | `1234.56` |
+| `1,234.56` | `1234.56` |
+| `12.50` | `12.50` |
+| `SÍ`, `X`, `activo` | `true` |
+| `N/A`, `-`, `sin dato` | vacío |
+| `4.0` (lo que openpyxl devuelve por un SKU `4`) | `"4"` |
+| `CC-1`, `10 unidades` | **error de fila**, no `-1` ni `10` |
+
+`15.000` se lee como quince mil, no como quince: un grupo de tres dígitos es
+mucho más veces un separador de miles. Cuando no lo es, se manda
+`decimal_separator` en el mapeo y la vista previa lo confirma.
+
+Un valor con letras nunca se "rescata" quitándoselas. Limpiar `CC-1` hasta `-1`
+importaría un precio equivocado sin que nadie se entere; fallar la fila es peor
+al momento y mucho mejor a la semana.
+
+### Dos caminos, un solo motor
+
+**El cliente** baja `GET /imports/templates/{entidad}` — un libro con los
+encabezados, una fila de ejemplo y una segunda hoja que documenta cada campo.
+Como los encabezados *son* las etiquetas, al subirlo el mapeo se resuelve exacto
+y el paso 2 le resulta invisible.
+
+**El operador** usa los mismos endpoints con `X-Company-ID` de la empresa
+destino, o carga una empresa entera de una vez:
+
+```bash
+curl localhost:8000/api/v1/admin/onboarding/template -H "Authorization: Bearer $ADMIN" -o carga.xlsx
+curl -X POST "localhost:8000/api/v1/admin/companies/$ID/onboarding?dry_run=true" \
+  -H "Authorization: Bearer $ADMIN" -F "file=@carga.xlsx"
+```
+
+Ese libro trae una hoja por entidad y se cargan **en orden de dependencia**
+(categorías → bodegas → productos → clientes → proveedores → stock) dentro de un
+único savepoint: o la empresa queda montada o no se tocó nada. Una hoja vacía se
+omite. Aquí el todo-o-nada pesa más que en una carga suelta: una empresa a medio
+construir es peor que una vacía, porque el operador no puede saber de un vistazo
+qué mitad falta.
+
+### Qué se puede cargar
+
+`CATEGORIES`, `WAREHOUSES`, `PRODUCTS`, `CUSTOMERS`, `SUPPLIERS` y `STOCK`
+(saldos iniciales). Todas **hacen upsert**: volver a subir un archivo corregido
+es normal, no una tarea de limpieza. El stock inicial genera movimientos
+`ADJUSTMENT`, así que el inventario tiene historial desde el primer día.
+
+`GET /imports/schemas` devuelve el catálogo completo de campos, en el orden en
+que conviene importarlos.
+
+### Errores
+
+Se reportan por **número de fila del archivo del usuario** (contando el
+encabezado y las filas en blanco, para que la encuentre) y por nombre de su
+columna, no de nuestro campo:
+
+```json
+{"row_number": 5, "column": "PVP", "field_key": "sale_price",
+ "value": "mil pesos", "message": "'mil pesos' is not a valid number"}
+```
+
+Una fila con problemas se salta y el resto carga. Se paginan en
+`GET /imports/{id}/errors`. Lo que el cargador puede anticipar (una categoría
+que no existe, una bodega desconocida, un código de barras repetido) es un error
+de fila; cualquier otra cosa aborta la carga entera.
+
+Un caso que vale la pena mencionar: los códigos de barras son únicos por
+empresa y los archivos los repiten constantemente. Antes eso reventaba la
+importación completa contra una restricción de la base. Ahora el producto se
+importa **sin** código de barras y el conflicto se reporta: el producto vale más
+que su código, y el usuario arregla los códigos después en vez de perder el
+catálogo.
+
+---
+
+## 12. Cómo añadir un módulo nuevo
 
 Tomando `products` o `sales` como plantilla:
 
@@ -631,7 +800,7 @@ Tomando `products` o `sales` como plantilla:
 
 ---
 
-## 12. Errores
+## 13. Errores
 
 Formato único (`BACKEND.md` §38):
 
@@ -645,7 +814,7 @@ que las traduce a HTTP.
 
 ---
 
-## 13. Decisiones de diseño
+## 14. Decisiones de diseño
 
 - **Dinero en `NUMERIC(18,4)`**, nunca `FLOAT`. `Decimal` en todo el dominio.
 - **Contraseñas con bcrypt**; se rechazan claves de más de 72 bytes en vez de
@@ -685,6 +854,15 @@ que las traduce a HTTP.
 - **`STORAGE_BACKEND=s3` falla ruidosamente** en vez de caer al disco local. Un
   despliegue que escribe facturas al disco efímero de un contenedor y las
   pierde en el siguiente deploy es peor que uno que no arranca.
+- **La simulación de una importación es la importación**, revertida con un
+  savepoint. Una validación aparte sería una segunda implementación de las
+  reglas y acabaría discrepando de la primera justo cuando importa.
+- **El importador nunca adivina en silencio.** Propone un mapeo con su
+  confianza y enseña el valor convertido al lado del crudo; lo que no puede
+  leer es un error de fila, no un valor inventado.
+- **El operador supervisa entrando a cada empresa por turno**, no con una
+  consulta entre tenants. Cuesta unas cuantas consultas por página y a cambio
+  el aislamiento no tiene una excepción más que mantener.
 - **`company_id` también en `sale_items` y `purchase_items`.** `BACKEND.md`
   dibuja esas tablas sin la columna, pero §22 pide RLS en toda tabla del tenant
   y una policy necesita un `company_id` con el que comparar. Sin ella, las
@@ -698,7 +876,7 @@ que las traduce a HTTP.
   quieren costo promedio ponderado en vez de último costo, y eso es una
   decisión del negocio, no un default.
 
-## 14. Lo que falta
+## 15. Lo que falta
 
 - **Adaptador S3.** El puerto, los endpoints y la tabla ya están; falta
   escribir `app/infrastructure/storage/s3.py` y registrarlo en `factory.py`.
@@ -706,6 +884,12 @@ que las traduce a HTTP.
   ya trae uno) y no sirve para más de un nodo.
 - **Imágenes sin procesar.** No se generan miniaturas ni se valida que un
   `image/png` sea realmente un PNG más allá de la cabecera declarada.
+- **Importaciones síncronas**, con un tope de 20.000 filas por archivo. Un
+  archivo más grande debe partirse; el paso natural es mover la carga al worker
+  Arq que ya existe y dejar el endpoint devolviendo un job que se consulta.
+- **No se importa historial de ventas ni compras.** El importador cubre el
+  catálogo y los saldos iniciales, que es lo que hace falta para arrancar;
+  traer movimientos históricos es otro problema (numeración, fechas, estados).
 - **Numeración consecutiva de documentos.** Ventas y compras se identifican por
   UUID; una factura #1, #2… por empresa necesita su propia secuencia y es
   requisito legal en la mayoría de países.

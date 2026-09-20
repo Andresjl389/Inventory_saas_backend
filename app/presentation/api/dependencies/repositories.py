@@ -11,6 +11,7 @@ from fastapi import Depends
 from app.application.audit.services.audit_service import AuditService
 from app.application.inventory.services.stock_service import StockService
 from app.domain.files.storage import FileStorage
+from app.domain.imports.table import SpreadsheetReader
 from app.infrastructure.database.repositories.audit_repository import SqlAlchemyAuditRepository
 from app.infrastructure.database.repositories.billing_repository import (
     SqlAlchemyPlanRepository,
@@ -22,8 +23,14 @@ from app.infrastructure.database.repositories.category_repository import (
 from app.infrastructure.database.repositories.company_member_repository import (
     SqlAlchemyCompanyMemberRepository,
 )
+from app.infrastructure.database.repositories.company_overview_repository import (
+    SqlAlchemyCompanyOverviewRepository,
+)
 from app.infrastructure.database.repositories.company_repository import SqlAlchemyCompanyRepository
 from app.infrastructure.database.repositories.file_repository import SqlAlchemyFileRepository
+from app.infrastructure.database.repositories.import_repository import (
+    SqlAlchemyImportJobRepository,
+)
 from app.infrastructure.database.repositories.notification_repository import (
     SqlAlchemyNotificationRepository,
 )
@@ -53,6 +60,8 @@ from app.infrastructure.database.repositories.user_repository import SqlAlchemyU
 from app.infrastructure.database.repositories.warehouse_repository import (
     SqlAlchemyWarehouseRepository,
 )
+from app.infrastructure.database.unit_of_work import SqlAlchemyUnitOfWork
+from app.infrastructure.imports.reader import OpenpyxlSpreadsheetReader
 from app.infrastructure.storage.factory import get_file_storage
 from app.presentation.api.dependencies.database import SessionDep
 
@@ -137,6 +146,41 @@ def get_file_repository(session: SessionDep) -> SqlAlchemyFileRepository:
     return SqlAlchemyFileRepository(session)
 
 
+def get_company_overview_repository(session: SessionDep) -> SqlAlchemyCompanyOverviewRepository:
+    return SqlAlchemyCompanyOverviewRepository(session)
+
+
+def get_import_repository(session: SessionDep) -> SqlAlchemyImportJobRepository:
+    return SqlAlchemyImportJobRepository(session)
+
+
+def get_unit_of_work(session: SessionDep) -> SqlAlchemyUnitOfWork:
+    return SqlAlchemyUnitOfWork(session)
+
+
+def get_loader_repositories(session: SessionDep) -> dict:
+    """Everything the import loaders may need, wired once.
+
+    A loader asks for what its entity requires; building them all costs a few
+    object allocations and keeps the router from knowing which needs what.
+    """
+    return {
+        "categories": SqlAlchemyCategoryRepository(session),
+        "products": SqlAlchemyProductRepository(session),
+        "warehouses": SqlAlchemyWarehouseRepository(session),
+        "customers": SqlAlchemyCustomerRepository(session),
+        "suppliers": SqlAlchemySupplierRepository(session),
+        "stock": SqlAlchemyStockRepository(session),
+        "stock_service": StockService(
+            SqlAlchemyStockRepository(session), SqlAlchemyStockMovementRepository(session)
+        ),
+    }
+
+
+def get_spreadsheet_reader() -> SpreadsheetReader:
+    return OpenpyxlSpreadsheetReader()
+
+
 def get_storage() -> FileStorage:
     """The blob store. Cached, so the local adapter creates its root once."""
     return get_file_storage()
@@ -195,3 +239,10 @@ PlatformStatsDep = Annotated[
 AuditServiceDep = Annotated[AuditService, Depends(get_audit_service)]
 FileRepoDep = Annotated[SqlAlchemyFileRepository, Depends(get_file_repository)]
 FileStorageDep = Annotated[FileStorage, Depends(get_storage)]
+ImportRepoDep = Annotated[SqlAlchemyImportJobRepository, Depends(get_import_repository)]
+UnitOfWorkDep = Annotated[SqlAlchemyUnitOfWork, Depends(get_unit_of_work)]
+LoaderRepositoriesDep = Annotated[dict, Depends(get_loader_repositories)]
+CompanyOverviewDep = Annotated[
+    SqlAlchemyCompanyOverviewRepository, Depends(get_company_overview_repository)
+]
+SpreadsheetReaderDep = Annotated[SpreadsheetReader, Depends(get_spreadsheet_reader)]

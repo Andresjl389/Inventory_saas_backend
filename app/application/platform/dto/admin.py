@@ -174,6 +174,61 @@ class SubscriptionDTO(BaseModel):
     cancelled_at: datetime | None
 
 
+class CompanyMetricsDTO(BaseModel):
+    """What a company actually has in it. Computed inside that company's own
+    tenant scope, so it is subject to the same RLS as its members' requests."""
+
+    members: int
+    active_members: int
+    products: int
+    active_products: int
+    warehouses: int
+    customers: int
+    suppliers: int
+    sales_count: int
+    sales_revenue: Decimal
+    purchases_count: int
+    stock_units: Decimal
+    stock_value: Decimal
+    last_sale_at: datetime | None
+
+
+class PlanUsageDTO(BaseModel):
+    """Current use against the plan's ceilings. `limit = 0` means unlimited."""
+
+    resource: str
+    used: int
+    limit: int
+    over_limit: bool
+
+
+class CompanyOverviewDTO(BaseModel):
+    company: AdminCompanyDTO
+    subscription: "SubscriptionDTO | None" = None
+    plan: "PlanDTO | None" = None
+    metrics: CompanyMetricsDTO
+    usage: list[PlanUsageDTO] = Field(default_factory=list)
+    # Days since the last completed sale; None when there has never been one.
+    days_since_last_sale: int | None = None
+
+
+class CompanyRowDTO(BaseModel):
+    """A row of the supervision table: the company plus a few live numbers."""
+
+    company: AdminCompanyDTO
+    plan_code: str | None = None
+    subscription_status: SubscriptionStatus | None = None
+    metrics: CompanyMetricsDTO | None = None
+
+
+class CompanySupervisionPageDTO(BaseModel):
+    items: list[CompanyRowDTO]
+    total: int
+    page: int
+    size: int
+    pages: int
+
+
 class PlatformStatsDTO(BaseModel):
     companies_total: int
     companies_active: int
@@ -184,3 +239,4 @@ class PlatformStatsDTO(BaseModel):
 
 
 ProvisionedCompanyDTO.model_rebuild()
+CompanyOverviewDTO.model_rebuild()
