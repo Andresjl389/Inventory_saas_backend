@@ -10,9 +10,12 @@ its event loop and no connection outlives the loop that created it.
 
 import asyncio
 import os
+import shutil
 import subprocess
+import tempfile
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +28,10 @@ TEST_DATABASE_URL = os.getenv(
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("JWT_SECRET", "test-secret-value-that-is-long-enough")
 os.environ.setdefault("APP_ENV", "testing")
+# Uploads go to a throwaway directory, never the working tree's ./uploads.
+STORAGE_ROOT = Path(tempfile.gettempdir()) / "inventory-saas-test-uploads"
+os.environ.setdefault("STORAGE_ROOT", str(STORAGE_ROOT))
+os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "1")
 
 # Cleanup deletes rather than truncates. TRUNCATE ... CASCADE empties *every*
 # table with a foreign key to the target, which would wipe the system roles
@@ -127,6 +134,19 @@ async def client(engine) -> AsyncIterator["object"]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
+
+
+@pytest.fixture(autouse=True)
+def clean_storage():
+    """Each test starts with an empty blob store."""
+    shutil.rmtree(STORAGE_ROOT, ignore_errors=True)
+    yield
+    shutil.rmtree(STORAGE_ROOT, ignore_errors=True)
+
+
+@pytest.fixture
+def storage_root() -> Path:
+    return STORAGE_ROOT
 
 
 @pytest.fixture

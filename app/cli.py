@@ -99,7 +99,18 @@ def main(argv: list[str] | None = None) -> int:
         help="If the account already exists, grant it admin rights and reset its password",
     )
 
+    subparsers.add_parser(
+        "sweep-files", help="Delete stored blobs that no database row points at"
+    ).add_argument("--dry-run", action="store_true", help="Report what would go, delete nothing")
+
     args = parser.parse_args(argv)
+
+    if args.command == "sweep-files":
+        from app.infrastructure.jobs.file_maintenance import sweep_orphan_files
+
+        result = asyncio.run(_run(sweep_orphan_files(dry_run=args.dry_run)))
+        print(result)
+        return 0
 
     if args.command == "create-superuser":
         password = _read_password(args.password)

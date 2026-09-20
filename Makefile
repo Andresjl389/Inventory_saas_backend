@@ -28,6 +28,9 @@ revision: ## Autogenerate a migration: make revision m="add sales"
 superuser: ## Create the first platform administrator (prompts for a password)
 	uv run python -m app.cli create-superuser --email $(email)
 
+sweep-files: ## Delete stored blobs no database row points at
+	uv run python -m app.cli sweep-files --dry-run
+
 low-stock: ## Run the low-stock sweep once, now
 	uv run python -c "import asyncio; from app.infrastructure.jobs.low_stock import sweep_low_stock; print(asyncio.run(sweep_low_stock()))"
 
@@ -53,4 +56,4 @@ format: ## Auto-format
 	uv run ruff format app tests alembic
 	uv run ruff check --fix app tests alembic
 
-.PHONY: help install up down stack migrate downgrade revision superuser low-stock worker run test test-db lint format
+.PHONY: help install up down stack migrate downgrade revision superuser sweep-files low-stock worker run test test-db lint format

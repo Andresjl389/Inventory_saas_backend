@@ -17,6 +17,11 @@ RUN pip install --upgrade pip && pip install .
 COPY alembic ./alembic
 COPY alembic.ini ./
 
+# Overridden by the named volume in compose; present so a bare `docker run`
+# still has somewhere to write.
+RUN mkdir -p /srv/uploads
+ENV STORAGE_ROOT=/srv/uploads
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \

@@ -10,6 +10,7 @@ from fastapi import Depends
 
 from app.application.audit.services.audit_service import AuditService
 from app.application.inventory.services.stock_service import StockService
+from app.domain.files.storage import FileStorage
 from app.infrastructure.database.repositories.audit_repository import SqlAlchemyAuditRepository
 from app.infrastructure.database.repositories.billing_repository import (
     SqlAlchemyPlanRepository,
@@ -22,6 +23,7 @@ from app.infrastructure.database.repositories.company_member_repository import (
     SqlAlchemyCompanyMemberRepository,
 )
 from app.infrastructure.database.repositories.company_repository import SqlAlchemyCompanyRepository
+from app.infrastructure.database.repositories.file_repository import SqlAlchemyFileRepository
 from app.infrastructure.database.repositories.notification_repository import (
     SqlAlchemyNotificationRepository,
 )
@@ -51,6 +53,7 @@ from app.infrastructure.database.repositories.user_repository import SqlAlchemyU
 from app.infrastructure.database.repositories.warehouse_repository import (
     SqlAlchemyWarehouseRepository,
 )
+from app.infrastructure.storage.factory import get_file_storage
 from app.presentation.api.dependencies.database import SessionDep
 
 
@@ -130,6 +133,15 @@ def get_notification_repository(session: SessionDep) -> SqlAlchemyNotificationRe
     return SqlAlchemyNotificationRepository(session)
 
 
+def get_file_repository(session: SessionDep) -> SqlAlchemyFileRepository:
+    return SqlAlchemyFileRepository(session)
+
+
+def get_storage() -> FileStorage:
+    """The blob store. Cached, so the local adapter creates its root once."""
+    return get_file_storage()
+
+
 def get_report_repository(session: SessionDep) -> SqlAlchemyReportRepository:
     return SqlAlchemyReportRepository(session)
 
@@ -181,3 +193,5 @@ PlatformStatsDep = Annotated[
     SqlAlchemyPlatformStatsRepository, Depends(get_platform_stats_repository)
 ]
 AuditServiceDep = Annotated[AuditService, Depends(get_audit_service)]
+FileRepoDep = Annotated[SqlAlchemyFileRepository, Depends(get_file_repository)]
+FileStorageDep = Annotated[FileStorage, Depends(get_storage)]

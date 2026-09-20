@@ -4,13 +4,13 @@ Backend multi-tenant construido sobre la arquitectura descrita en `BACKEND.md`:
 FastAPI + PostgreSQL con Row Level Security, arquitectura hexagonal y aislamiento
 de tenants en tres capas.
 
-> Estado: **Fases 1 a 5 implementadas**. 54 endpoints, 21 tablas, 117 tests.
+> Estado: **Fases 1 a 5 implementadas**. 57 endpoints, 22 tablas, 141 tests.
 > Identity, empresas, miembros, tenant context, RLS, categorías, productos,
 > bodegas, inventario con ledger, clientes, proveedores, ventas, compras,
 > **super admin de plataforma**, roles y permisos en base de datos, auditoría,
 > reportes, notificaciones, jobs en background, planes y suscripciones.
-> Pendiente: almacenamiento S3 (imágenes, facturas, exportaciones) y
-> numeración consecutiva de documentos.
+> El almacenamiento de archivos funciona sobre una carpeta local; el adaptador
+> S3 es lo único que falta de la arquitectura original.
 
 ---
 
@@ -268,6 +268,7 @@ app/
 │   ├── sales/           Sale (agregado con SaleItem)
 │   ├── purchases/       Purchase (agregado con PurchaseItem)
 │   ├── audit/           AuditEntry
+│   ├── files/           StoredFile, puerto FileStorage, generación de claves
 │   ├── billing/         Plan, Subscription
 │   ├── notifications/   Notification
 │   └── reports/         puertos de lectura (agregaciones)
@@ -283,13 +284,15 @@ app/
 │   ├── authorization/   CRUD de roles + catálogo de permisos
 │   ├── platform/        aprovisionar empresas, usuarios, planes (super admin)
 │   ├── audit/           AuditService + lectura
+│   ├── files/           subir, listar, descargar, borrar adjuntos
 │   ├── reports/         ventas, valorización, stock bajo
 │   └── notifications/   bandeja de la empresa
 │
 ├── infrastructure/    Detalles reemplazables.
 │   ├── database/        modelos SQLAlchemy, repositorios, sesión,
 │   │                    tenant_context.py, rls.py, migration_helpers.py
-│   └── jobs/            worker Arq, barrido de stock bajo, contexto de jobs
+│   ├── storage/         adaptador local (atómico) + factory
+│   └── jobs/            worker Arq, stock bajo, barrido de huérfanos
 │
 ├── presentation/      FastAPI.
 │   └── api/
@@ -306,8 +309,14 @@ app/
 FastAPI, SQLAlchemy ni Redis: puedes comprobarlo con
 
 ```bash
-grep -rE "fastapi|sqlalchemy|redis" app/domain/   # no debe devolver nada
+grep -rE "fastapi|sqlalchemy|redis" app/domain/              # sin frameworks
+grep -r "from app.infrastructure" app/domain/ app/application/  # sin infraestructura
 ```
+
+Ninguno de los dos devuelve nada. La generación de claves de almacenamiento,
+por ejemplo, vive en `app/domain/files/keys.py` y no en el adaptador: cómo se
+organizan los archivos de un tenant es una decisión de la aplicación, y el
+adaptador solo recibe una clave que no eligió.
 
 ---
 
@@ -384,7 +393,8 @@ alembic/versions/
 │                                   app.is_platform_admin(), siembra del catálogo
 ├── 0009_audit_logs.py              audit_logs (append-only)
 ├── 0010_billing.py                 plans (sembrados), subscriptions
-└── 0011_notifications.py           notifications, products.min_stock
+├── 0011_notifications.py           notifications, products.min_stock
+└── 0012_files.py                   files + permisos files.read / files.write
 ```
 
 La migración 0008 siembra desde `app.domain.authorization.permissions`, así que
@@ -522,7 +532,84 @@ El payload se limpia antes de escribirse: `password`, `password_hash`,
 
 ---
 
-## 10. Cómo añadir un módulo nuevo
+## 10. Archivos adjuntos
+
+Los bytes viven fuera de PostgreSQL (`BACKEND.md` §42). Hoy en una carpeta
+local; mañana en un bucket S3 sin tocar nada por encima del adaptador.
+
+```bash
+# Imagen de un producto
+curl -X POST localhost:8000/api/v1/files \
+  -H "Authorization: Bearer $TOKEN" -H "X-Company-ID: $COMPANY_ID" \
+  -F "file=@martillo.png" -F "owner_type=PRODUCT" -F "owner_id=$PRODUCT_ID"
+
+# Las imágenes de ese producto
+curl "localhost:8000/api/v1/files?owner_type=PRODUCT&owner_id=$PRODUCT_ID" "${AUTH[@]}"
+
+# Descargar (la respuesta trae download_url ya armada)
+curl "localhost:8000/api/v1/files/$FILE_ID/content" "${AUTH[@]}" -o martillo.png
+```
+
+`owner_type` acepta `PRODUCT`, `SALE`, `PURCHASE`, `COMPANY`, `IMPORT`,
+`EXPORT`, `REPORT`. Los tres primeros exigen un `owner_id` que exista **en esa
+empresa**: `files.owner_id` no tiene foreign key (apunta a la tabla que diga
+`owner_type`, y una columna no puede referenciar varias), así que la validación
+vive en la aplicación.
+
+### Cómo se guarda
+
+La ruta se genera en el servidor y **nunca** sale del nombre que manda el
+cliente:
+
+```text
+uploads/{company_id}/{owner_type}/{yyyy}/{mm}/{uuid}{ext}
+```
+
+La extensión sale del **content type**, no del filename. Eso elimina como
+categoría el path traversal, las extensiones dobles y los `foto.png.php`, en
+vez de tener que filtrarlos. El nombre original se guarda aparte, saneado, y
+solo se devuelve en la cabecera `Content-Disposition`.
+
+Otras propiedades que el adaptador garantiza:
+
+- **Escrituras atómicas**: los bytes caen en `uploads/.tmp/*.part` y se mueven
+  con `os.replace`. Una subida fallida nunca deja medio archivo legible.
+- **Límite en streaming**: el tope (`MAX_UPLOAD_SIZE_MB`, 10 por defecto) se
+  aplica chunk a chunk, no leyendo el cuerpo entero primero; un `Content-Length`
+  demasiado grande se rechaza antes de tocar el disco.
+- **Aislamiento**: la tabla `files` lleva RLS como cualquier otra. El id de otra
+  empresa es un 404, nunca una descarga.
+- **Solo imágenes se sirven `inline`**; todo lo demás va como `attachment`, con
+  `X-Content-Type-Options: nosniff`.
+
+### El orden de las dos escrituras
+
+Una subida escribe **primero el blob y después la fila**. Si la petición falla
+en medio, queda un blob huérfano — disco desperdiciado — en vez de una fila
+apuntando a nada, que para el usuario es una descarga rota. El barrido diario
+(3:30) reclama esos huérfanos, y solo toca blobs con más de una hora, para no
+borrar una subida cuya fila todavía está en una transacción sin confirmar.
+
+Al borrar es al revés: la fila se va en la transacción y el blob después del
+commit (`BackgroundTasks`), así que un rollback no puede dejar una fila
+apuntando a bytes que ya no están.
+
+```bash
+make sweep-files                       # dry run
+uv run python -m app.cli sweep-files   # de verdad
+```
+
+### Migrar a S3
+
+`app/domain/files/storage.py` define el puerto (`save`, `open`, `delete`,
+`exists`). Escribe `app/infrastructure/storage/s3.py`, regístralo en
+`factory.py` y cambia `STORAGE_BACKEND=s3`. Nada más cambia: ni los endpoints,
+ni los casos de uso, ni la tabla. Hoy `factory.py` falla ruidosamente si pides
+`s3`, en vez de escribir en silencio al disco del contenedor.
+
+---
+
+## 11. Cómo añadir un módulo nuevo
 
 Tomando `products` o `sales` como plantilla:
 
@@ -544,7 +631,7 @@ Tomando `products` o `sales` como plantilla:
 
 ---
 
-## 11. Errores
+## 12. Errores
 
 Formato único (`BACKEND.md` §38):
 
@@ -558,7 +645,7 @@ que las traduce a HTTP.
 
 ---
 
-## 12. Decisiones de diseño
+## 13. Decisiones de diseño
 
 - **Dinero en `NUMERIC(18,4)`**, nunca `FLOAT`. `Decimal` en todo el dominio.
 - **Contraseñas con bcrypt**; se rechazan claves de más de 72 bytes en vez de
@@ -589,6 +676,15 @@ que las traduce a HTTP.
   dejar una instalación sin administrador.
 - **Los planes usan 0 = ilimitado**, no NULL: "sin límite" es un valor real, y
   un NULL habría que tratarlo aparte en cada comparación.
+- **La ruta de un archivo se genera en el servidor**, con la extensión derivada
+  del content type. Filtrar nombres maliciosos es una carrera que se pierde;
+  no usarlos nunca no lo es.
+- **Blob primero, fila después.** El modo de fallo que queda es disco
+  desperdiciado, no una descarga rota. Al borrar el orden se invierte por la
+  misma razón.
+- **`STORAGE_BACKEND=s3` falla ruidosamente** en vez de caer al disco local. Un
+  despliegue que escribe facturas al disco efímero de un contenedor y las
+  pierde en el siguiente deploy es peor que uno que no arranca.
 - **`company_id` también en `sale_items` y `purchase_items`.** `BACKEND.md`
   dibuja esas tablas sin la columna, pero §22 pide RLS en toda tabla del tenant
   y una policy necesita un `company_id` con el que comparar. Sin ella, las
@@ -602,11 +698,14 @@ que las traduce a HTTP.
   quieren costo promedio ponderado en vez de último costo, y eso es una
   decisión del negocio, no un default.
 
-## 13. Lo que falta
+## 14. Lo que falta
 
-- **Almacenamiento S3** (`BACKEND.md` §42): imágenes de productos, facturas,
-  reportes generados, importaciones y exportaciones. Es lo único de la
-  arquitectura original que no está.
+- **Adaptador S3.** El puerto, los endpoints y la tabla ya están; falta
+  escribir `app/infrastructure/storage/s3.py` y registrarlo en `factory.py`.
+  Hasta entonces, la carpeta local necesita un volumen persistente (el compose
+  ya trae uno) y no sirve para más de un nodo.
+- **Imágenes sin procesar.** No se generan miniaturas ni se valida que un
+  `image/png` sea realmente un PNG más allá de la cabecera declarada.
 - **Numeración consecutiva de documentos.** Ventas y compras se identifican por
   UUID; una factura #1, #2… por empresa necesita su propia secuencia y es
   requisito legal en la mayoría de países.

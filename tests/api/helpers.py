@@ -104,3 +104,31 @@ async def platform_admin(client, engine, email: str = "ops@example.com") -> dict
 async def as_company(admin_headers: dict[str, str], company_id: str) -> dict[str, str]:
     """An operator stepping into one company: same headers plus X-Company-ID."""
     return {**admin_headers, "X-Company-ID": company_id}
+
+
+PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+async def upload(
+    client,
+    hdrs: dict,
+    *,
+    content: bytes = PNG_BYTES,
+    filename: str = "photo.png",
+    content_type: str = "image/png",
+    owner_type: str = "COMPANY",
+    owner_id: str | None = None,
+):
+    data = {"owner_type": owner_type}
+    if owner_id:
+        data["owner_id"] = owner_id
+    return await client.post(
+        "/api/v1/files",
+        headers=hdrs,
+        files={"file": (filename, content, content_type)},
+        data=data,
+    )

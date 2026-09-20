@@ -42,11 +42,15 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://inventory:inventory@postgres:5432/inventory
       REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /srv/uploads
     ports:
       - "8000:8000"
     volumes:
       - ./app:/srv/app
       - ./alembic:/srv/alembic
+      # Uploads live outside PostgreSQL. A named volume so they survive a
+      # rebuild; swap it for an S3 bucket by changing STORAGE_BACKEND.
+      - uploads:/srv/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,8 +65,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://inventory:inventory@postgres:5432/inventory
       REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /srv/uploads
     volumes:
       - ./app:/srv/app
+      - uploads:/srv/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,3 +78,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  uploads:

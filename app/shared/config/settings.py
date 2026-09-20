@@ -1,6 +1,7 @@
 """Application settings loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, PostgresDsn, field_validator
@@ -41,6 +42,21 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     # Storage
+    # "local" writes under storage_root; "s3" is the same port with a different
+    # adapter and is not wired yet.
+    storage_backend: Literal["local", "s3"] = "local"
+    storage_root: Path = Path("uploads")
+    max_upload_size_mb: int = 10
+    allowed_upload_types: list[str] = [
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+        "application/pdf",
+        "text/csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ]
+
     s3_endpoint: str | None = None
     s3_bucket: str | None = None
     s3_access_key: str | None = None
@@ -54,6 +70,10 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.startswith("postgresql://"):
             return value.replace("postgresql://", "postgresql+asyncpg://", 1)
         return value
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        return self.max_upload_size_mb * 1024 * 1024
 
     @property
     def is_production(self) -> bool:

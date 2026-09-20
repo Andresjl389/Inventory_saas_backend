@@ -9,6 +9,7 @@ from app.infrastructure.database.models.authorization import (
     RolePermissionModel,
 )
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
+from app.infrastructure.database.models.file import FileModel
 from app.infrastructure.database.models.inventory import (
     ProductStockModel,
     StockMovementModel,
@@ -32,6 +33,7 @@ __all__ = [
     "CompanyMemberModel",
     "CompanyModel",
     "CustomerModel",
+    "FileModel",
     "NotificationModel",
     "PermissionModel",
     "PlanModel",

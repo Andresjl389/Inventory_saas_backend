@@ -8,6 +8,7 @@ from app.domain.audit.entities.audit_entry import AuditEntry
 from app.domain.authorization.entities.role import Permission, Role
 from app.domain.billing.entities.plan import Plan, Subscription
 from app.domain.customers.entities.customer import Customer
+from app.domain.files.entities.stored_file import StoredFile
 from app.domain.identity.entities.user import User
 from app.domain.inventory.entities.product_stock import ProductStock
 from app.domain.inventory.entities.stock_movement import StockMovement
@@ -22,6 +23,7 @@ from app.domain.tenants.entities.company import Company
 from app.domain.tenants.entities.company_member import CompanyMember
 from app.infrastructure.database.models.authorization import PermissionModel, RoleModel
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
+from app.infrastructure.database.models.file import FileModel
 from app.infrastructure.database.models.inventory import (
     ProductStockModel,
     StockMovementModel,
@@ -328,4 +330,21 @@ def notification_to_domain(model: NotificationModel) -> Notification:
         is_read=model.is_read,
         dedupe_key=model.dedupe_key,
         entity_id=model.entity_id,
+    )
+
+
+def stored_file_to_domain(model: FileModel) -> StoredFile:
+    return StoredFile(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        company_id=model.company_id,
+        owner_type=model.owner_type,
+        owner_id=model.owner_id,
+        filename=model.filename,
+        content_type=model.content_type,
+        size_bytes=model.size_bytes,
+        storage_key=model.storage_key,
+        checksum=model.checksum,
+        uploaded_by=model.uploaded_by,
     )
