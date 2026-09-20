@@ -5,20 +5,22 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Index,
-    Numeric,
     String,
     Text,
     UniqueConstraint,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.infrastructure.database.base import Base, TenantMixin, TimestampMixin, UUIDPrimaryKeyMixin
-
-# 4 decimal places keeps unit prices exact for per-unit costs that are cents
-# fractions; totals are rounded at the sale/purchase level.
-MONEY = Numeric(18, 4)
+from app.infrastructure.database.base import (
+    MONEY,
+    Base,
+    TenantMixin,
+    TimestampMixin,
+    UUIDPrimaryKeyMixin,
+)
 
 
 class CategoryModel(UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
@@ -42,9 +44,15 @@ class ProductModel(UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     sku: Mapped[str] = mapped_column(String(64), nullable=False)
     barcode: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    cost_price: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=Decimal("0"))
-    sale_price: Mapped[Decimal] = mapped_column(MONEY, nullable=False, default=Decimal("0"))
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    cost_price: Mapped[Decimal] = mapped_column(
+        MONEY, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    sale_price: Mapped[Decimal] = mapped_column(
+        MONEY, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
 
     __table_args__ = (
         UniqueConstraint("company_id", "sku"),

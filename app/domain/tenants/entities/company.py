@@ -3,22 +3,17 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.domain.shared.document import DocumentType
 from app.domain.shared.entities import BaseEntity
+
+# Re-exported so callers can keep importing it from the company module.
+__all__ = ["Company", "CompanyStatus", "DocumentType"]
 
 
 class CompanyStatus(StrEnum):
     ACTIVE = "ACTIVE"
     SUSPENDED = "SUSPENDED"
     INACTIVE = "INACTIVE"
-
-
-class DocumentType(StrEnum):
-    NIT = "NIT"
-    CC = "CC"
-    CE = "CE"
-    PASSPORT = "PASSPORT"
-    RUT = "RUT"
-    OTHER = "OTHER"
 
 
 @dataclass(kw_only=True)

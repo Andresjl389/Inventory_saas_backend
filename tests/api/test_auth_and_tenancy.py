@@ -2,39 +2,13 @@
 
 import uuid
 
+from tests.api.helpers import PASSWORD
+from tests.api.helpers import headers as _headers
+from tests.api.helpers import login as _login
+from tests.api.helpers import register as _register
 from tests.conftest import requires_db
 
 pytestmark = requires_db
-
-PASSWORD = "sup3r-secret-pw"
-
-
-async def _register(client, email: str, company: str | None = "Acme") -> dict:
-    response = await client.post(
-        "/api/v1/auth/register",
-        json={
-            "email": email,
-            "password": PASSWORD,
-            "first_name": "Ada",
-            "last_name": "Lovelace",
-            "company_name": company,
-        },
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-async def _login(client, email: str) -> str:
-    response = await client.post("/api/v1/auth/login", json={"email": email, "password": PASSWORD})
-    assert response.status_code == 200, response.text
-    return response.json()["access_token"]
-
-
-def _headers(token: str, company_id: str | None = None) -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {token}"}
-    if company_id:
-        headers["X-Company-ID"] = company_id
-    return headers
 
 
 async def test_register_creates_user_and_bootstraps_owner_company(client, unique_email):

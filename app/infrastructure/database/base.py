@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, MetaData, func, text
+from sqlalchemy import DateTime, Enum, ForeignKey, MetaData, Numeric, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -55,6 +55,24 @@ class TenantMixin:
 
     company_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
+        ForeignKey("companies.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
+    )
+
+
+# Money and quantities: NUMERIC(18, 4), never FLOAT (BACKEND.md section 12).
+MONEY = Numeric(18, 4)
+QUANTITY = Numeric(18, 4)
+
+
+def enum_column(python_enum, name: str) -> Enum:
+    """VARCHAR + CHECK instead of a native PG enum: adding a value later is a
+    constraint change rather than an ALTER TYPE dance."""
+    return Enum(
+        python_enum,
+        name=name,
+        native_enum=False,
+        length=32,
+        values_callable=lambda enum_cls: [member.value for member in enum_cls],
     )

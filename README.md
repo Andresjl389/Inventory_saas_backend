@@ -4,10 +4,12 @@ Backend multi-tenant construido sobre la arquitectura descrita en `BACKEND.md`:
 FastAPI + PostgreSQL con Row Level Security, arquitectura hexagonal y aislamiento
 de tenants en tres capas.
 
-> Estado: **prototipo de Fase 1 + slice vertical de Fase 2**.
-> Implementado: setup, base de datos, Alembic con RLS, identity, companies,
-> company members, tenant context, categorías y productos.
-> Pendiente: bodegas, inventario, clientes, proveedores, ventas y compras.
+> Estado: **Fases 1, 2 y 3 implementadas**.
+> Identity, companies, company members, tenant context, RLS, categorías,
+> productos, bodegas, inventario con ledger de movimientos, clientes,
+> proveedores, ventas y compras.
+> Pendiente (Fase 4+): permisos en base de datos, audit logs, notificaciones,
+> reportes, background jobs, suscripciones y facturación.
 
 ---
 
@@ -56,6 +58,10 @@ ALTER SCHEMA public OWNER TO inventory;
 make test-db     # crea inventory_test, migra y ejecuta toda la suite
 make test        # requiere TEST_DATABASE_URL apuntando a una base de pruebas
 ```
+
+82 tests: unitarios de dominio (totales, transiciones de estado, signos de los
+movimientos), aislamiento RLS contra PostgreSQL real, cobertura estructural de
+RLS, permisos por rol, concurrencia de stock y flujos de API completos.
 
 Los tests unitarios corren siempre; los de integración y API se saltan solos si
 no hay PostgreSQL disponible.
@@ -111,6 +117,38 @@ curl -X POST localhost:8000/api/v1/products \
   -d '{"name":"Martillo","sku":"mar-01","cost_price":"10.50","sale_price":"19.99"}'
 ```
 
+### Flujo de negocio completo
+
+```bash
+AUTH=(-H "Authorization: Bearer $TOKEN" -H "X-Company-ID: $COMPANY_ID" -H 'Content-Type: application/json')
+
+# Bodega y producto
+curl -X POST localhost:8000/api/v1/warehouses "${AUTH[@]}" -d '{"name":"Central"}'
+
+# Compra recibida: entra stock y queda el movimiento PURCHASE
+curl -X POST localhost:8000/api/v1/purchases "${AUTH[@]}" -d '{
+  "warehouse_id":"'$W'", "supplier_id":"'$S'", "complete":true,
+  "items":[{"product_id":"'$P'","quantity":"50","unit_cost":"8.00"}]}'
+
+# Venta completada: bloquea el stock, valida disponibilidad y descuenta
+curl -X POST localhost:8000/api/v1/sales "${AUTH[@]}" -d '{
+  "warehouse_id":"'$W'", "customer_id":"'$C'", "complete":true,
+  "items":[{"product_id":"'$P'","quantity":"5"}]}'
+
+# Traslado entre bodegas (TRANSFER_OUT + TRANSFER_IN en una transacción)
+curl -X POST localhost:8000/api/v1/inventory/transfers "${AUTH[@]}" -d '{
+  "product_id":"'$P'", "source_warehouse_id":"'$W'",
+  "destination_warehouse_id":"'$W2'", "quantity":"20"}'
+
+# Stock actual y trazabilidad
+curl "localhost:8000/api/v1/inventory/stock?product_id=$P" -H "Authorization: Bearer $TOKEN" -H "X-Company-ID: $COMPANY_ID"
+curl "localhost:8000/api/v1/inventory/movements?product_id=$P" -H "Authorization: Bearer $TOKEN" -H "X-Company-ID: $COMPANY_ID"
+```
+
+Si una línea no tiene `unit_price`, se toma el `sale_price` vigente del
+producto. Si cualquier línea se queda sin stock, **toda** la venta se revierte:
+no existe el estado intermedio donde parte del pedido salió de la bodega.
+
 ---
 
 ## 3. Estructura
@@ -118,19 +156,28 @@ curl -X POST localhost:8000/api/v1/products \
 ```
 app/
 ├── domain/            Entidades, value objects, puertos (Protocols), reglas.
-│   ├── shared/          BaseEntity, TenantEntity, paginación
+│   ├── shared/          BaseEntity, TenantEntity, paginación, money, document
 │   ├── identity/        User, Email
 │   ├── tenants/         Company, CompanyMember, TenantContext, permisos
-│   └── products/        Category, Product
+│   ├── products/        Category, Product
+│   ├── inventory/       Warehouse, ProductStock, StockMovement
+│   ├── customers/       Customer
+│   ├── suppliers/       Supplier
+│   ├── sales/           Sale (agregado con SaleItem)
+│   └── purchases/       Purchase (agregado con PurchaseItem)
 │
 ├── application/       Casos de uso y DTOs. Orquesta el dominio.
 │   ├── identity/        RegisterUser, AuthenticateUser, RefreshTokens
 │   ├── tenants/         CreateCompany, ListMyCompanies, manage members
-│   └── products/        CRUD de categorías y productos
+│   ├── products/        CRUD de categorías y productos
+│   ├── inventory/       StockService + warehouses, ajustes, traslados
+│   ├── customers/ suppliers/
+│   ├── sales/           Create, Get, List, Complete, Cancel, Refund
+│   └── purchases/       Create, Get, List, Complete, Cancel
 │
 ├── infrastructure/    Detalles reemplazables.
 │   ├── database/        modelos SQLAlchemy, repositorios, sesión,
-│   │                    tenant_context.py, rls.py
+│   │                    tenant_context.py, rls.py, migration_helpers.py
 │   └── jobs/            worker Arq (placeholder de Fase 4)
 │
 ├── presentation/      FastAPI.
@@ -192,6 +239,15 @@ el UUID, entra en el scope del nuevo tenant (`TenantScope.enter`) y recién
 entonces inserta la empresa y la membresía del OWNER. Así las policies de
 INSERT no necesitan excepciones.
 
+### El olvido que importa
+
+El riesgo real no es que las policies estén mal escritas, sino que alguien
+agregue una tabla nueva y no le ponga ninguna.
+`tests/integration/test_rls_coverage.py` lo impide: consulta el catálogo de
+PostgreSQL y exige que **toda** tabla con columna `company_id` tenga
+`FORCE ROW LEVEL SECURITY` y sus cuatro policies. Una tabla sin RLS hace fallar
+la suite con el nombre de la tabla y qué falta.
+
 ---
 
 ## 5. Migraciones
@@ -205,10 +261,18 @@ alembic upgrade head
 
 ```
 alembic/versions/
-├── 0001_extensions_and_base.py   pgcrypto, schema app, app.current_company_id(), app.current_user_id()
-├── 0002_identity_and_tenants.py  users, companies, company_members + policies a medida
-└── 0003_products.py              categories, products + policies estándar
+├── 0001_extensions_and_base.py     pgcrypto, schema app, app.current_company_id(), app.current_user_id()
+├── 0002_identity_and_tenants.py    users, companies, company_members + policies a medida
+├── 0003_products.py                categories, products
+├── 0004_inventory.py               warehouses, product_stock, stock_movements
+├── 0005_customers_and_suppliers.py customers, suppliers
+├── 0006_sales.py                   sales, sale_items
+└── 0007_purchases.py               purchases, purchase_items
 ```
+
+`alembic check` no detecta drift: los modelos SQLAlchemy y las migraciones
+describen exactamente el mismo esquema, así que `--autogenerate` es confiable
+para los módulos que vengan.
 
 `app/infrastructure/database/rls.py` expone `enable_tenant_rls(op, "tabla")`,
 que activa `ENABLE`/`FORCE ROW LEVEL SECURITY` y crea las cuatro policies
@@ -218,18 +282,92 @@ verificado.
 
 ---
 
-## 6. Cómo añadir un módulo nuevo
+## 6. Inventario: el ledger
 
-Tomando `products` como plantilla, para p. ej. `warehouses`:
+El stock no vive en un campo suelto. Hay dos tablas y una relación que se
+cumple siempre:
 
-1. **Dominio** — `app/domain/inventory/entities/warehouse.py` (hereda de
+```text
+product_stock.quantity  ==  SUM(stock_movements.quantity)
+```
+
+`stock_movements` es un libro **append-only**: cada fila es un delta **con
+signo** sobre un (producto, bodega). `product_stock` es la caché de lectura, y
+se escribe en la misma transacción y bajo el mismo row lock que el movimiento
+que la cambia, así que las dos no pueden discrepar. Hay un test que verifica la
+igualdad contra PostgreSQL.
+
+| Tipo | Signo | Se origina en |
+|---|---|---|
+| `PURCHASE` | + | compra completada |
+| `SALE` | − | venta completada |
+| `RETURN` | + | venta cancelada o devuelta |
+| `TRANSFER_OUT` / `TRANSFER_IN` | − / + | traslado entre bodegas |
+| `ADJUSTMENT` | ± | ajuste manual, reversión de compra |
+
+El signo lo obliga un CHECK en la base de datos, no solo el dominio.
+
+### Concurrencia
+
+Todo cambio de stock pasa por `StockService.apply_movement`, el único escritor
+de `product_stock`. Su primer paso es tomar el lock:
+
+```sql
+INSERT INTO product_stock (...) VALUES (..., 0)
+ON CONFLICT (company_id, product_id, warehouse_id) DO NOTHING;
+
+SELECT * FROM product_stock
+WHERE company_id = ... AND product_id = ... AND warehouse_id = ...
+FOR UPDATE;
+```
+
+El `INSERT ... ON CONFLICT` cierra la carrera del primer movimiento de un
+producto en una bodega; el `FOR UPDATE` serializa a todos los demás. Primero se
+bloquea y después se valida la disponibilidad: leer la cantidad antes del lock
+dejaría que otra transacción invalidara la comprobación.
+
+Las líneas de una venta se procesan ordenadas por `product_id`, para que dos
+ventas simultáneas tomen los locks en la misma secuencia y no puedan trabarse
+entre sí. Lo mismo hacen los traslados con las dos bodegas.
+
+Hay un test que lanza dos ventas concurrentes sobre una única unidad: exactamente
+una gana y la otra recibe `INSUFFICIENT_STOCK`.
+
+### Ventas y compras
+
+```text
+DRAFT ──complete──> COMPLETED ──cancel──> CANCELLED   (devuelve el stock)
+  │                     │
+  │                     └──refund──> REFUNDED         (solo ventas)
+  └──cancel──> CANCELLED                              (no tocó stock)
+```
+
+`POST /sales` con `"complete": true` crea y completa en **una sola
+transacción** — el flujo de punto de venta de `BACKEND.md` §28. Los totales
+siempre se derivan de las líneas: el cliente no puede pedir que le cobren un
+importe distinto al que suman sus ítems.
+
+Cancelar una compra ya recibida se registra como `ADJUSTMENT`, no como una
+`PURCHASE` negativa, para que los reportes de volumen de compra no se netéen
+solos.
+
+---
+
+## 7. Cómo añadir un módulo nuevo
+
+Tomando `products` o `sales` como plantilla:
+
+1. **Dominio** — `app/domain/<modulo>/entities/<entidad>.py` (hereda de
    `TenantEntity`), `exceptions.py` y el puerto
-   `repositories/warehouse_repository.py` (un `Protocol`).
+   `repositories/<entidad>_repository.py` (un `Protocol`).
 2. **Aplicación** — DTOs Pydantic y casos de uso que reciben `TenantContext`.
 3. **Infraestructura** — modelo SQLAlchemy con `TenantMixin`, repositorio
    SQLAlchemy y su mapper.
-4. **Migración** — `0004_inventory.py`: tabla, índices `(company_id, ...)`,
-   constraints y `enable_tenant_rls(op, "warehouses")`.
+4. **Migración** — tabla, índices `(company_id, ...)`, constraints y
+   `enable_tenant_rls(op, "<tabla>")`. Los helpers de
+   `migration_helpers.py` (`uuid_pk`, `timestamps`, `money_column`…) evitan
+   repetir las columnas de siempre. Si olvidas el RLS,
+   `tests/integration/test_rls_coverage.py` falla.
 5. **Presentación** — router en `api/v1/`, alta en `api/v1/router.py`,
    proveedor del repositorio en `dependencies/repositories.py` y permisos nuevos
    en `ROLE_PERMISSIONS`.
@@ -237,7 +375,7 @@ Tomando `products` como plantilla, para p. ej. `warehouses`:
 
 ---
 
-## 7. Errores
+## 8. Errores
 
 Formato único (`BACKEND.md` §38):
 
@@ -251,7 +389,7 @@ que las traduce a HTTP.
 
 ---
 
-## 8. Decisiones tomadas en el prototipo
+## 9. Decisiones de diseño
 
 - **Dinero en `NUMERIC(18,4)`**, nunca `FLOAT`. `Decimal` en todo el dominio.
 - **Contraseñas con bcrypt**; se rechazan claves de más de 72 bytes en vez de
@@ -268,9 +406,28 @@ que las traduce a HTTP.
   `jti` en Redis; `decode_token` ya devuelve ese `jti`.
 - **Permisos en código** (`ROLE_PERMISSIONS`), listos para migrar a las tablas
   `roles`/`permissions` de la Fase 4 sin tocar los routers.
+- **`company_id` también en `sale_items` y `purchase_items`.** `BACKEND.md`
+  dibuja esas tablas sin la columna, pero §22 pide RLS en toda tabla del tenant
+  y una policy necesita un `company_id` con el que comparar. Sin ella, las
+  líneas serían la vía por la que se filtra una venta cuyo encabezado sí está
+  protegido.
+- **Cantidades en `NUMERIC(18,4)`**, no enteros: hay negocios que venden por
+  peso o por metro.
+- **Precio de venta opcional en la línea.** Omitido, se usa el `sale_price` del
+  producto; enviado, manda el de la línea — así funciona un precio negociado.
+- **`update_product_costs` es opt-in** al completar una compra. Muchos negocios
+  quieren costo promedio ponderado en vez de último costo, y eso es una
+  decisión del negocio, no un default.
 
-## 9. Siguiente paso sugerido
+## 10. Siguiente paso sugerido
 
-Fase 2 completa: `warehouses`, `product_stock` y `stock_movements` con
-`SELECT ... FOR UPDATE` sobre `product_stock` dentro de la transacción, tal como
-describe `BACKEND.md` §28–29.
+Fase 4: permisos en tablas (`roles`, `permissions`, `role_permissions`) para
+reemplazar `ROLE_PERMISSIONS`, audit logs, alertas de stock bajo sobre el worker
+Arq que ya está en el compose, y reportes.
+
+Dos deudas conocidas del prototipo, por si pesan antes:
+
+- **Logout sin revocación.** Hace falta una denylist de `jti` en Redis.
+- **Numeración de documentos.** Ventas y compras se identifican por UUID; un
+  consecutivo por empresa (factura #1, #2…) necesita su propia secuencia y es
+  requisito en la mayoría de países.

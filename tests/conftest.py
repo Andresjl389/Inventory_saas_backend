@@ -28,7 +28,22 @@ os.environ.setdefault("APP_ENV", "testing")
 
 # Truncation order does not matter (CASCADE), but keeping it child-first makes
 # the intent readable.
-TABLES = ("products", "categories", "company_members", "companies", "users")
+TABLES = (
+    "sale_items",
+    "sales",
+    "purchase_items",
+    "purchases",
+    "stock_movements",
+    "product_stock",
+    "warehouses",
+    "customers",
+    "suppliers",
+    "products",
+    "categories",
+    "company_members",
+    "companies",
+    "users",
+)
 
 
 def _database_available() -> bool:

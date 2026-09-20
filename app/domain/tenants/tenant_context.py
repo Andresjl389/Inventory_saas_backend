@@ -31,6 +31,16 @@ ROLE_PERMISSIONS: dict[CompanyRole, frozenset[str]] = {
             "inventory.read",
             "inventory.adjust",
             "inventory.transfer",
+            "customers.read",
+            "customers.write",
+            "suppliers.read",
+            "suppliers.write",
+            "sales.read",
+            "sales.create",
+            "sales.cancel",
+            "purchases.read",
+            "purchases.create",
+            "purchases.cancel",
         }
     ),
     CompanyRole.INVENTORY_MANAGER: frozenset(
@@ -42,9 +52,17 @@ ROLE_PERMISSIONS: dict[CompanyRole, frozenset[str]] = {
             "products.create",
             "products.update",
             "warehouses.read",
+            "warehouses.write",
             "inventory.read",
             "inventory.adjust",
             "inventory.transfer",
+            "customers.read",
+            "suppliers.read",
+            "suppliers.write",
+            "sales.read",
+            "purchases.read",
+            "purchases.create",
+            "purchases.cancel",
         }
     ),
     CompanyRole.SELLER: frozenset(
@@ -54,6 +72,10 @@ ROLE_PERMISSIONS: dict[CompanyRole, frozenset[str]] = {
             "products.read",
             "warehouses.read",
             "inventory.read",
+            "customers.read",
+            "customers.write",
+            "sales.read",
+            "sales.create",
         }
     ),
 }
