@@ -15,7 +15,7 @@ from app.application.notifications.use_cases.notification_use_cases import (
 from app.domain.shared.pagination import MAX_PAGE_SIZE
 from app.domain.tenants.tenant_context import TenantContext
 from app.presentation.api.dependencies.repositories import NotificationRepoDep
-from app.presentation.api.dependencies.tenant import TenantDep, require_permission
+from app.presentation.api.dependencies.tenant import require_permission
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -37,6 +37,6 @@ async def list_notifications(
 
 @router.post("/{notification_id}/read", response_model=NotificationDTO)
 async def mark_read(
-    notification_id: uuid.UUID, tenant: TenantDep, notifications: NotificationRepoDep
+    notification_id: uuid.UUID, tenant: ReadDep, notifications: NotificationRepoDep
 ) -> NotificationDTO:
     return await MarkNotificationReadUseCase(notifications).execute(notification_id, tenant=tenant)

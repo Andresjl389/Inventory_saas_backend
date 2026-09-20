@@ -15,6 +15,10 @@ de tenants en tres capas.
 
 ---
 
+> **¿Vas a construir el frontend?** Empieza por
+> [`docs/FRONTEND.md`](docs/FRONTEND.md): autenticación, el header de empresa,
+> permisos, los flujos completos y las trampas que el esquema OpenAPI no cuenta.
+
 ## 1. Arranque rápido
 
 ### Con Docker (todo el stack)
