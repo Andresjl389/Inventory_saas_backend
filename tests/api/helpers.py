@@ -48,6 +48,8 @@ async def create_warehouse(client, hdrs: dict, name: str = "Main") -> str:
 
 
 async def create_product(client, hdrs: dict, sku: str = "SKU-1", **fields) -> str:
+    """Extra keyword arguments go straight into the payload (cost_price,
+    sale_price, min_stock, category_id...)."""
     payload = {"name": fields.pop("name", "Hammer"), "sku": sku, **fields}
     response = await client.post("/api/v1/products", headers=hdrs, json=payload)
     assert response.status_code == 201, response.text
@@ -79,3 +81,26 @@ async def receive_stock(
         },
     )
     assert response.status_code == 201, response.text
+
+
+async def platform_admin(client, engine, email: str = "ops@example.com") -> dict[str, str]:
+    """Create a platform administrator and return its auth headers.
+
+    `is_superuser` is set directly in the database because that is the only way
+    it is ever set: there is no API that promotes the first operator, only the
+    `create-superuser` CLI.
+    """
+    from sqlalchemy import text
+
+    await register(client, email, company=None)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE users SET is_superuser = true WHERE email = :email"),
+            {"email": email},
+        )
+    return headers(await login(client, email))
+
+
+async def as_company(admin_headers: dict[str, str], company_id: str) -> dict[str, str]:
+    """An operator stepping into one company: same headers plus X-Company-ID."""
+    return {**admin_headers, "X-Company-ID": company_id}

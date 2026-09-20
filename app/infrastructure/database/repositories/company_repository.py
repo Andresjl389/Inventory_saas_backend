@@ -1,9 +1,10 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.tenants.entities.company import Company
+from app.domain.shared.pagination import Page, PaginatedResult
+from app.domain.tenants.entities.company import Company, CompanyStatus
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
 from app.infrastructure.database.repositories.mappers import company_to_domain
 
@@ -58,3 +59,48 @@ class SqlAlchemyCompanyRepository:
         )
         rows = (await self._session.execute(stmt)).scalars().all()
         return [company_to_domain(row) for row in rows]
+
+    async def list_all(
+        self,
+        *,
+        page: Page,
+        search: str | None = None,
+        status: CompanyStatus | None = None,
+    ) -> PaginatedResult[Company]:
+        """Every company, for the platform console.
+
+        Only a platform admin ever sees rows here: the RLS policy on companies
+        returns a tenant's own row (or the ones they are a member of), so the
+        same query run by a normal user is already narrowed.
+        """
+        filters = []
+        if search:
+            pattern = f"%{search.strip()}%"
+            filters.append(
+                or_(
+                    CompanyModel.name.ilike(pattern),
+                    CompanyModel.legal_name.ilike(pattern),
+                    CompanyModel.document_number.ilike(pattern),
+                    CompanyModel.email.ilike(pattern),
+                )
+            )
+        if status is not None:
+            filters.append(CompanyModel.status == status)
+
+        total = (
+            await self._session.execute(
+                select(func.count()).select_from(CompanyModel).where(*filters)
+            )
+        ).scalar_one()
+
+        stmt = (
+            select(CompanyModel)
+            .where(*filters)
+            .order_by(CompanyModel.created_at.desc())
+            .offset(page.offset)
+            .limit(page.limit)
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        return PaginatedResult(
+            items=[company_to_domain(row) for row in rows], total=total, page=page
+        )

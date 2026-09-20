@@ -1,9 +1,11 @@
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
 from app.application.tenants.dto.company import (
     AddMemberCommand,
+    ChangeMemberRoleCommand,
     CompanyDTO,
     CompanyMemberDTO,
     CreateCompanyCommand,
@@ -13,6 +15,7 @@ from app.application.tenants.use_cases.create_company import CreateCompanyUseCas
 from app.application.tenants.use_cases.list_my_companies import ListMyCompaniesUseCase
 from app.application.tenants.use_cases.manage_members import (
     AddCompanyMemberUseCase,
+    ChangeMemberRoleUseCase,
     ListCompanyMembersUseCase,
 )
 from app.domain.tenants.tenant_context import TenantContext
@@ -20,6 +23,7 @@ from app.presentation.api.dependencies.auth import CurrentUserDep
 from app.presentation.api.dependencies.repositories import (
     CompanyRepoDep,
     MemberRepoDep,
+    RoleRepoDep,
     TenantScopeDep,
     UserRepoDep,
 )
@@ -47,9 +51,10 @@ async def create_company(
     user: CurrentUserDep,
     companies: CompanyRepoDep,
     members: MemberRepoDep,
+    roles: RoleRepoDep,
     tenant_scope: TenantScopeDep,
 ) -> CompanyDTO:
-    return await CreateCompanyUseCase(companies, members, tenant_scope).execute(
+    return await CreateCompanyUseCase(companies, members, roles, tenant_scope).execute(
         command, owner_id=user.id
     )
 
@@ -78,5 +83,22 @@ async def add_member(
     tenant: Annotated[TenantContext, Depends(require_permission("members.manage"))],
     members: MemberRepoDep,
     users: UserRepoDep,
+    roles: RoleRepoDep,
 ) -> CompanyMemberDTO:
-    return await AddCompanyMemberUseCase(members, users).execute(command, tenant=tenant)
+    """`role` is a role *code*: a built-in one or a custom role of this company."""
+    return await AddCompanyMemberUseCase(members, users, roles).execute(command, tenant=tenant)
+
+
+@router.patch("/current/members/{user_id}", response_model=CompanyMemberDTO)
+async def change_member_role(
+    user_id: uuid.UUID,
+    command: ChangeMemberRoleCommand,
+    tenant: Annotated[TenantContext, Depends(require_permission("members.manage"))],
+    members: MemberRepoDep,
+    users: UserRepoDep,
+    roles: RoleRepoDep,
+) -> CompanyMemberDTO:
+    """Change a member's role, or activate/deactivate them."""
+    return await ChangeMemberRoleUseCase(members, users, roles).execute(
+        user_id, command, tenant=tenant
+    )

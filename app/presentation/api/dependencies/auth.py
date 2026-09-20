@@ -8,7 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.domain.identity.entities.user import User
 from app.domain.identity.exceptions import InactiveUserError, InvalidCredentialsError
-from app.infrastructure.database.tenant_context import set_current_user
+from app.infrastructure.database.tenant_context import set_current_user, set_platform_admin
 from app.presentation.api.dependencies.database import SessionDep
 from app.presentation.api.dependencies.repositories import UserRepoDep
 from app.shared.logging.context import user_id_var
@@ -35,6 +35,11 @@ async def get_current_user(
 
     # RLS on companies/company_members reads app.current_user_id().
     await set_current_user(session, user.id)
+    if user.is_superuser:
+        # The flag comes from the database row, never from the token: a stolen
+        # token cannot promote itself, and demoting a user takes effect on
+        # their next request.
+        await set_platform_admin(session, True)
     user_id_var.set(str(user.id))
     return user
 

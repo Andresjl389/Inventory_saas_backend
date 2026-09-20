@@ -3,6 +3,11 @@
 Alembic's env.py relies on it for autogenerate.
 """
 
+from app.infrastructure.database.models.authorization import (
+    PermissionModel,
+    RoleModel,
+    RolePermissionModel,
+)
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
 from app.infrastructure.database.models.inventory import (
     ProductStockModel,
@@ -10,23 +15,36 @@ from app.infrastructure.database.models.inventory import (
     WarehouseModel,
 )
 from app.infrastructure.database.models.partner import CustomerModel, SupplierModel
+from app.infrastructure.database.models.platform import (
+    AuditLogModel,
+    NotificationModel,
+    PlanModel,
+    SubscriptionModel,
+)
 from app.infrastructure.database.models.product import CategoryModel, ProductModel
 from app.infrastructure.database.models.purchase import PurchaseItemModel, PurchaseModel
 from app.infrastructure.database.models.sale import SaleItemModel, SaleModel
 from app.infrastructure.database.models.user import UserModel
 
 __all__ = [
+    "AuditLogModel",
     "CategoryModel",
     "CompanyMemberModel",
     "CompanyModel",
     "CustomerModel",
+    "NotificationModel",
+    "PermissionModel",
+    "PlanModel",
     "ProductModel",
     "ProductStockModel",
     "PurchaseItemModel",
     "PurchaseModel",
+    "RoleModel",
+    "RolePermissionModel",
     "SaleItemModel",
     "SaleModel",
     "StockMovementModel",
+    "SubscriptionModel",
     "SupplierModel",
     "UserModel",
     "WarehouseModel",

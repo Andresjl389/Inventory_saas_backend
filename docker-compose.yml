@@ -56,6 +56,7 @@ services:
   worker:
     build: .
     command: ["arq", "app.infrastructure.jobs.worker.WorkerSettings"]
+    # Runs the nightly low-stock sweep (07:00) and any queued jobs.
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://inventory:inventory@postgres:5432/inventory

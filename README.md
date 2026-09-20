@@ -4,12 +4,13 @@ Backend multi-tenant construido sobre la arquitectura descrita en `BACKEND.md`:
 FastAPI + PostgreSQL con Row Level Security, arquitectura hexagonal y aislamiento
 de tenants en tres capas.
 
-> Estado: **Fases 1, 2 y 3 implementadas**.
-> Identity, companies, company members, tenant context, RLS, categorías,
-> productos, bodegas, inventario con ledger de movimientos, clientes,
-> proveedores, ventas y compras.
-> Pendiente (Fase 4+): permisos en base de datos, audit logs, notificaciones,
-> reportes, background jobs, suscripciones y facturación.
+> Estado: **Fases 1 a 5 implementadas**. 54 endpoints, 21 tablas, 117 tests.
+> Identity, empresas, miembros, tenant context, RLS, categorías, productos,
+> bodegas, inventario con ledger, clientes, proveedores, ventas, compras,
+> **super admin de plataforma**, roles y permisos en base de datos, auditoría,
+> reportes, notificaciones, jobs en background, planes y suscripciones.
+> Pendiente: almacenamiento S3 (imágenes, facturas, exportaciones) y
+> numeración consecutiva de documentos.
 
 ---
 
@@ -52,6 +53,21 @@ ALTER SCHEMA public OWNER TO inventory;
 > `FORCE ROW LEVEL SECURITY`, así que las policies aplican incluso al dueño de
 > la tabla.
 
+### Primer administrador de plataforma
+
+Una base recién migrada no tiene ningún super admin, así que `/api/v1/admin/*`
+no es alcanzable hasta ejecutar:
+
+```bash
+make superuser email=ops@tuempresa.com
+# o, dentro de docker:
+docker compose exec backend python -m app.cli create-superuser --email ops@tuempresa.com
+```
+
+Pide la contraseña por prompt a propósito: pasarla como flag la deja en el
+historial del shell y en `ps`. Con `--promote` convierte en administrador a una
+cuenta que ya existe.
+
 ### Tests
 
 ```bash
@@ -68,7 +84,92 @@ no hay PostgreSQL disponible.
 
 ---
 
-## 2. Flujo de una petición
+## 2. Super admin: la consola de plataforma
+
+El super admin es el operador del SaaS, no un miembro de ninguna empresa. Se
+marca con `users.is_superuser` — una columna, nunca un claim del token — y ese
+mismo chequeo es el que levanta `app.is_platform_admin` en la transacción, así
+que el guard de la API y las policies de RLS no pueden contradecirse.
+
+```bash
+# Crear empresa + dueño + suscripción, todo en una transacción
+curl -X POST localhost:8000/api/v1/admin/companies -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{
+    "name":"Ferretería Central",
+    "owner_email":"ana@ferreteria.com", "owner_password":"clave-de-la-dueña",
+    "plan_code":"STANDARD"}'
+```
+
+Si `owner_email` ya tiene cuenta, esa persona pasa a ser la dueña; si no, se
+crea y `owner_password` es obligatorio. Nunca queda una empresa a medio
+aprovisionar: si algo falla, se revierte entera.
+
+| Endpoint | Para qué |
+|---|---|
+| `GET /admin/stats` | Tablero: empresas y usuarios por estado |
+| `POST /admin/companies` | Aprovisionar empresa + dueño + plan |
+| `GET /admin/companies` | Todas las empresas, con búsqueda y filtro por estado |
+| `PATCH /admin/companies/{id}` | Editar, **suspender** o reactivar |
+| `GET /admin/companies/{id}/members` | Quién pertenece a esa empresa |
+| `GET/POST /admin/users`, `PATCH /admin/users/{id}` | Crear cuentas, resetear claves, desactivar, otorgar rol de plataforma |
+| `GET/POST /admin/plans`, `PATCH /admin/plans/{id}` | Catálogo de planes |
+| `PUT /admin/companies/{id}/subscription` | Poner una empresa en un plan |
+| `GET /admin/audit` | Auditoría de toda la plataforma |
+
+Suspender una empresa la deja fuera en la siguiente petición de sus miembros
+(`403 INVALID_COMPANY`), pero el operador sigue pudiendo entrar — que suele ser
+exactamente el motivo por el que la está mirando.
+
+### Hasta dónde llega el escape de RLS
+
+Esta es la decisión de diseño que más importa de esta fase. El flag de
+plataforma **no** abre las tablas de negocio:
+
+| Tablas | Policy | Por qué |
+|---|---|---|
+| `companies`, `company_members`, `roles`, `subscriptions`, `audit_logs` | `... OR app.is_platform_admin()` | El operador legítimamente las lista entre tenants |
+| `permissions`, `plans` | Lectura para todos, escritura solo para plataforma | Catálogos globales |
+| `products`, `sales`, `stock_movements`, … | **Sin escape**, solo `company_id = app.current_company_id()` | Nunca hay una petición que lea el negocio de dos empresas a la vez |
+
+Para ver los datos de una empresa, el operador **entra** en ella mandando
+`X-Company-ID`. No tiene membresía, así que se le construye un `TenantContext`
+de plataforma con permisos totales — pero de **una sola empresa**. Hay un test
+que lo comprueba: el mismo admin, en dos empresas, ve un producto en cada una y
+nunca los dos juntos.
+
+---
+
+## 3. Roles y permisos
+
+Los roles viven en la base de datos (`roles`, `permissions`, `role_permissions`),
+no en un enum. Una empresa puede definir los suyos sin un deploy.
+
+```bash
+curl -X POST localhost:8000/api/v1/roles "${AUTH[@]}" -d '{
+  "code":"cajero", "name":"Cajero",
+  "permissions":["company.read","products.read","sales.read","sales.create"]}'
+
+curl -X POST localhost:8000/api/v1/companies/current/members "${AUTH[@]}" \
+  -d '{"email":"caja@ferreteria.com","role":"CAJERO"}'
+```
+
+- Los cuatro roles del sistema (`OWNER`, `ADMIN`, `SELLER`, `INVENTORY_MANAGER`)
+  tienen `company_id IS NULL`: son iguales para todas las empresas y ninguna
+  puede editarlos. Quien quiera "ADMIN menos algo" clona y ajusta.
+- Un rol propio con el mismo código que uno del sistema **gana** dentro de esa
+  empresa (`resolve_for_company`), así que se puede endurecer un built-in
+  localmente.
+- Los permisos se leen de la base en **cada petición**, así que cambiar un rol
+  surte efecto sin que nadie vuelva a iniciar sesión.
+- `app/domain/authorization/permissions.py` es la única fuente de verdad del
+  catálogo: la migración 0008 lo siembra desde ahí y un test verifica que no se
+  separen.
+- Solo un OWNER puede crear un rol con el comodín `*`. Si no, un ADMIN podría
+  fabricarse un rol más poderoso que el suyo y asignárselo.
+
+---
+
+## 4. Flujo de una petición
 
 ```
 HTTP Request
@@ -151,20 +252,25 @@ no existe el estado intermedio donde parte del pedido salió de la bodega.
 
 ---
 
-## 3. Estructura
+## 5. Estructura
 
 ```
 app/
 ├── domain/            Entidades, value objects, puertos (Protocols), reglas.
 │   ├── shared/          BaseEntity, TenantEntity, paginación, money, document
-│   ├── identity/        User, Email
+│   ├── identity/        User, Email, platform admin
+│   ├── authorization/   Role, Permission, catálogo de permisos
 │   ├── tenants/         Company, CompanyMember, TenantContext, permisos
 │   ├── products/        Category, Product
 │   ├── inventory/       Warehouse, ProductStock, StockMovement
 │   ├── customers/       Customer
 │   ├── suppliers/       Supplier
 │   ├── sales/           Sale (agregado con SaleItem)
-│   └── purchases/       Purchase (agregado con PurchaseItem)
+│   ├── purchases/       Purchase (agregado con PurchaseItem)
+│   ├── audit/           AuditEntry
+│   ├── billing/         Plan, Subscription
+│   ├── notifications/   Notification
+│   └── reports/         puertos de lectura (agregaciones)
 │
 ├── application/       Casos de uso y DTOs. Orquesta el dominio.
 │   ├── identity/        RegisterUser, AuthenticateUser, RefreshTokens
@@ -173,12 +279,17 @@ app/
 │   ├── inventory/       StockService + warehouses, ajustes, traslados
 │   ├── customers/ suppliers/
 │   ├── sales/           Create, Get, List, Complete, Cancel, Refund
-│   └── purchases/       Create, Get, List, Complete, Cancel
+│   ├── purchases/       Create, Get, List, Complete, Cancel
+│   ├── authorization/   CRUD de roles + catálogo de permisos
+│   ├── platform/        aprovisionar empresas, usuarios, planes (super admin)
+│   ├── audit/           AuditService + lectura
+│   ├── reports/         ventas, valorización, stock bajo
+│   └── notifications/   bandeja de la empresa
 │
 ├── infrastructure/    Detalles reemplazables.
 │   ├── database/        modelos SQLAlchemy, repositorios, sesión,
 │   │                    tenant_context.py, rls.py, migration_helpers.py
-│   └── jobs/            worker Arq (placeholder de Fase 4)
+│   └── jobs/            worker Arq, barrido de stock bajo, contexto de jobs
 │
 ├── presentation/      FastAPI.
 │   └── api/
@@ -186,7 +297,8 @@ app/
 │       ├── dependencies/ auth, tenant, repositorios (composition root)
 │       └── middleware/  request context, manejo de errores
 │
-└── shared/            config, security (bcrypt + JWT), excepciones, logging
+├── shared/            config, security (bcrypt + JWT), excepciones, logging
+└── cli.py             create-superuser (bootstrap de la plataforma)
 ```
 
 **Regla de dependencias:** `presentation → application → domain`, e
@@ -199,14 +311,14 @@ grep -rE "fastapi|sqlalchemy|redis" app/domain/   # no debe devolver nada
 
 ---
 
-## 4. Multi-tenancy y RLS
+## 6. Multi-tenancy y RLS
 
 Tres capas, tal como exige `BACKEND.md` §48:
 
 | Capa | Dónde | Qué impide |
 |---|---|---|
 | Autenticación | `dependencies/auth.py` | peticiones sin identidad válida |
-| Autorización de aplicación | `require_permission` + repositorios filtrando por `company_id` | operaciones fuera del rol y consultas mal escritas |
+| Autorización de aplicación | `require_permission` + permisos leídos de la base | operaciones fuera del rol |
 | PostgreSQL RLS | migraciones (`enable_tenant_rls`) | cualquier fuga que se escape a las dos anteriores |
 
 El contexto viaja a la base de datos como ajuste **local a la transacción**:
@@ -250,7 +362,7 @@ la suite con el nombre de la tabla y qué falta.
 
 ---
 
-## 5. Migraciones
+## 7. Migraciones
 
 Todo — tablas, índices, constraints, funciones, RLS y policies — vive en
 Alembic. Una base vacía queda lista con:
@@ -267,8 +379,18 @@ alembic/versions/
 ├── 0004_inventory.py               warehouses, product_stock, stock_movements
 ├── 0005_customers_and_suppliers.py customers, suppliers
 ├── 0006_sales.py                   sales, sale_items
-└── 0007_purchases.py               purchases, purchase_items
+├── 0007_purchases.py               purchases, purchase_items
+├── 0008_roles_and_permissions.py   roles, permissions, role_permissions,
+│                                   app.is_platform_admin(), siembra del catálogo
+├── 0009_audit_logs.py              audit_logs (append-only)
+├── 0010_billing.py                 plans (sembrados), subscriptions
+└── 0011_notifications.py           notifications, products.min_stock
 ```
+
+La migración 0008 siembra desde `app.domain.authorization.permissions`, así que
+el catálogo de permisos y los roles del sistema no pueden separarse del código.
+Siembra **antes** de activar RLS: la migración corre sin contexto de tenant y
+sin el flag de plataforma, así que sus propias policies rechazarían los INSERT.
 
 `alembic check` no detecta drift: los modelos SQLAlchemy y las migraciones
 describen exactamente el mismo esquema, así que `--autogenerate` es confiable
@@ -282,7 +404,7 @@ verificado.
 
 ---
 
-## 6. Inventario: el ledger
+## 8. Inventario: el ledger
 
 El stock no vive en un campo suelto. Hay dos tablas y una relación que se
 cumple siempre:
@@ -353,7 +475,54 @@ solos.
 
 ---
 
-## 7. Cómo añadir un módulo nuevo
+## 9. Reportes, notificaciones y jobs
+
+### Reportes
+
+```text
+GET /reports/sales?since=&until=&limit=     ingresos, ticket promedio, más vendidos
+GET /reports/inventory-valuation            cuánto vale el stock, a costo y a venta
+GET /reports/low-stock                      productos en o bajo su punto de reorden
+GET /reports/audit                          auditoría de esta empresa
+```
+
+Son agregaciones, no entidades: pasarlas por los repositorios de entidades
+significaría traer miles de filas para sumarlas en Python. Por eso el puerto
+`ReportRepository` devuelve registros planos y el SQL vive en el adaptador.
+
+Solo cuentan las ventas `COMPLETED`: los borradores no ocurrieron y las
+canceladas o devueltas ya regresaron el dinero.
+
+### Alertas de stock bajo
+
+`products.min_stock` es el punto de reorden (0 = sin alerta). El job diario
+recorre empresa por empresa **dentro del contexto de cada una**, así que está
+sujeto al mismo RLS que una petición; el único paso entre tenants es listar qué
+empresas visitar.
+
+```bash
+make worker      # arq: cron diario 07:00
+make low-stock   # ejecutarlo una vez, ahora
+```
+
+Las notificaciones se deduplican con un índice único parcial
+`(company_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND is_read = false`:
+un segundo barrido sobre un producto que sigue bajo mínimo no crea otra fila,
+y dos workers simultáneos tampoco.
+
+### Auditoría
+
+`audit_logs` es **append-only**: tiene policies de SELECT e INSERT y
+deliberadamente ninguna de UPDATE ni DELETE, ni siquiera para la plataforma. Un
+test lo verifica contra `pg_policies`. Las filas con `company_id NULL` son
+eventos de plataforma y solo las ve el operador.
+
+El payload se limpia antes de escribirse: `password`, `password_hash`,
+`access_token`, `refresh_token` y `authorization` nunca llegan al log.
+
+---
+
+## 10. Cómo añadir un módulo nuevo
 
 Tomando `products` o `sales` como plantilla:
 
@@ -375,7 +544,7 @@ Tomando `products` o `sales` como plantilla:
 
 ---
 
-## 8. Errores
+## 11. Errores
 
 Formato único (`BACKEND.md` §38):
 
@@ -389,7 +558,7 @@ que las traduce a HTTP.
 
 ---
 
-## 9. Decisiones de diseño
+## 12. Decisiones de diseño
 
 - **Dinero en `NUMERIC(18,4)`**, nunca `FLOAT`. `Decimal` en todo el dominio.
 - **Contraseñas con bcrypt**; se rechazan claves de más de 72 bytes en vez de
@@ -404,8 +573,22 @@ que las traduce a HTTP.
   no nulos deben ser únicos.
 - **Logout sin estado** por ahora. La revocación real necesita una denylist de
   `jti` en Redis; `decode_token` ya devuelve ese `jti`.
-- **Permisos en código** (`ROLE_PERMISSIONS`), listos para migrar a las tablas
-  `roles`/`permissions` de la Fase 4 sin tocar los routers.
+- **Permisos en base de datos**, leídos en cada petición. Cuesta un join por
+  request y a cambio un cambio de rol surte efecto sin volver a iniciar sesión.
+  Si el join pesa, el siguiente paso es cachearlo en Redis con invalidación al
+  editar el rol — no volver al enum.
+- **El super admin no es miembro de ninguna empresa.** Podría haberse modelado
+  como una membresía especial, pero entonces todo el código de tenants tendría
+  que preguntarse "¿y si este miembro es de plataforma?". Separarlos deja los
+  dos caminos limpios.
+- **El flag de plataforma se lee de la base, no del token.** Un token robado no
+  puede promoverse solo, y quitarle el rol a alguien surte efecto en su
+  siguiente petición sin esperar a que expire el JWT.
+- **Nadie puede quitarse a sí mismo sus propios privilegios**: ni el operador su
+  rol de plataforma, ni el dueño su rol en la empresa. Es la forma más fácil de
+  dejar una instalación sin administrador.
+- **Los planes usan 0 = ilimitado**, no NULL: "sin límite" es un valor real, y
+  un NULL habría que tratarlo aparte en cada comparación.
 - **`company_id` también en `sale_items` y `purchase_items`.** `BACKEND.md`
   dibuja esas tablas sin la columna, pero §22 pide RLS en toda tabla del tenant
   y una policy necesita un `company_id` con el que comparar. Sin ella, las
@@ -419,15 +602,18 @@ que las traduce a HTTP.
   quieren costo promedio ponderado en vez de último costo, y eso es una
   decisión del negocio, no un default.
 
-## 10. Siguiente paso sugerido
+## 13. Lo que falta
 
-Fase 4: permisos en tablas (`roles`, `permissions`, `role_permissions`) para
-reemplazar `ROLE_PERMISSIONS`, audit logs, alertas de stock bajo sobre el worker
-Arq que ya está en el compose, y reportes.
-
-Dos deudas conocidas del prototipo, por si pesan antes:
-
-- **Logout sin revocación.** Hace falta una denylist de `jti` en Redis.
-- **Numeración de documentos.** Ventas y compras se identifican por UUID; un
-  consecutivo por empresa (factura #1, #2…) necesita su propia secuencia y es
-  requisito en la mayoría de países.
+- **Almacenamiento S3** (`BACKEND.md` §42): imágenes de productos, facturas,
+  reportes generados, importaciones y exportaciones. Es lo único de la
+  arquitectura original que no está.
+- **Numeración consecutiva de documentos.** Ventas y compras se identifican por
+  UUID; una factura #1, #2… por empresa necesita su propia secuencia y es
+  requisito legal en la mayoría de países.
+- **Logout sin revocación.** Hace falta una denylist de `jti` en Redis;
+  `decode_token` ya devuelve ese `jti`.
+- **Cuotas de plan sin aplicar.** `plans.max_users`, `max_products` y
+  `max_warehouses` se guardan y se muestran, pero todavía no bloquean la
+  creación del recurso.
+- **Invitaciones por correo.** Hoy un miembro nuevo debe tener cuenta; el super
+  admin puede crearla desde `/admin/users`.

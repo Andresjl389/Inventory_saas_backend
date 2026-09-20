@@ -17,6 +17,7 @@ from app.presentation.api.dependencies.auth import CurrentUserDep
 from app.presentation.api.dependencies.repositories import (
     CompanyRepoDep,
     MemberRepoDep,
+    RoleRepoDep,
     TenantScopeDep,
     UserRepoDep,
 )
@@ -35,9 +36,10 @@ async def register(
     users: UserRepoDep,
     companies: CompanyRepoDep,
     members: MemberRepoDep,
+    roles: RoleRepoDep,
     tenant_scope: TenantScopeDep,
 ) -> RegisterResponse:
-    use_case = RegisterUserUseCase(users, companies, members, tenant_scope)
+    use_case = RegisterUserUseCase(users, companies, members, roles, tenant_scope)
     user, company_id = await use_case.execute(command)
     return RegisterResponse(user=user, company_id=company_id)
 

@@ -1,8 +1,10 @@
 import uuid
 
 from app.application.tenants.dto.company import CompanyDTO, CreateCompanyCommand
+from app.domain.authorization.permissions import SystemRole
+from app.domain.authorization.repositories.role_repository import RoleRepository
 from app.domain.tenants.entities.company import Company
-from app.domain.tenants.entities.company_member import CompanyMember, CompanyRole
+from app.domain.tenants.entities.company_member import CompanyMember
 from app.domain.tenants.repositories.company_member_repository import CompanyMemberRepository
 from app.domain.tenants.repositories.company_repository import CompanyRepository
 from app.domain.tenants.repositories.tenant_scope import TenantScope
@@ -21,13 +23,18 @@ class CreateCompanyUseCase:
         self,
         companies: CompanyRepository,
         members: CompanyMemberRepository,
+        roles: RoleRepository,
         tenant_scope: TenantScope,
     ) -> None:
         self._companies = companies
         self._members = members
+        self._roles = roles
         self._tenant_scope = tenant_scope
 
     async def execute(self, command: CreateCompanyCommand, *, owner_id: uuid.UUID) -> CompanyDTO:
+        owner_role = await self._roles.get_by_code(SystemRole.OWNER.value, company_id=None)
+        assert owner_role is not None, "the OWNER system role is seeded by migration 0008"
+
         company = Company(
             name=command.name.strip(),
             legal_name=command.legal_name,
@@ -40,6 +47,11 @@ class CreateCompanyUseCase:
 
         created = await self._companies.add(company)
         await self._members.add(
-            CompanyMember(company_id=created.id, user_id=owner_id, role=CompanyRole.OWNER)
+            CompanyMember(
+                company_id=created.id,
+                user_id=owner_id,
+                role_id=owner_role.id,
+                role_code=owner_role.code,
+            )
         )
         return CompanyDTO.model_validate(created, from_attributes=True)

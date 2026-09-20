@@ -8,7 +8,13 @@ from typing import Annotated
 
 from fastapi import Depends
 
+from app.application.audit.services.audit_service import AuditService
 from app.application.inventory.services.stock_service import StockService
+from app.infrastructure.database.repositories.audit_repository import SqlAlchemyAuditRepository
+from app.infrastructure.database.repositories.billing_repository import (
+    SqlAlchemyPlanRepository,
+    SqlAlchemySubscriptionRepository,
+)
 from app.infrastructure.database.repositories.category_repository import (
     SqlAlchemyCategoryRepository,
 )
@@ -16,13 +22,24 @@ from app.infrastructure.database.repositories.company_member_repository import (
     SqlAlchemyCompanyMemberRepository,
 )
 from app.infrastructure.database.repositories.company_repository import SqlAlchemyCompanyRepository
+from app.infrastructure.database.repositories.notification_repository import (
+    SqlAlchemyNotificationRepository,
+)
 from app.infrastructure.database.repositories.partner_repository import (
     SqlAlchemyCustomerRepository,
     SqlAlchemySupplierRepository,
 )
+from app.infrastructure.database.repositories.platform_stats_repository import (
+    SqlAlchemyPlatformStatsRepository,
+)
 from app.infrastructure.database.repositories.product_repository import SqlAlchemyProductRepository
 from app.infrastructure.database.repositories.purchase_repository import (
     SqlAlchemyPurchaseRepository,
+)
+from app.infrastructure.database.repositories.report_repository import SqlAlchemyReportRepository
+from app.infrastructure.database.repositories.role_repository import (
+    SqlAlchemyPermissionRepository,
+    SqlAlchemyRoleRepository,
 )
 from app.infrastructure.database.repositories.sale_repository import SqlAlchemySaleRepository
 from app.infrastructure.database.repositories.stock_repository import (
@@ -89,6 +106,42 @@ def get_purchase_repository(session: SessionDep) -> SqlAlchemyPurchaseRepository
     return SqlAlchemyPurchaseRepository(session)
 
 
+def get_role_repository(session: SessionDep) -> SqlAlchemyRoleRepository:
+    return SqlAlchemyRoleRepository(session)
+
+
+def get_permission_repository(session: SessionDep) -> SqlAlchemyPermissionRepository:
+    return SqlAlchemyPermissionRepository(session)
+
+
+def get_audit_repository(session: SessionDep) -> SqlAlchemyAuditRepository:
+    return SqlAlchemyAuditRepository(session)
+
+
+def get_plan_repository(session: SessionDep) -> SqlAlchemyPlanRepository:
+    return SqlAlchemyPlanRepository(session)
+
+
+def get_subscription_repository(session: SessionDep) -> SqlAlchemySubscriptionRepository:
+    return SqlAlchemySubscriptionRepository(session)
+
+
+def get_notification_repository(session: SessionDep) -> SqlAlchemyNotificationRepository:
+    return SqlAlchemyNotificationRepository(session)
+
+
+def get_report_repository(session: SessionDep) -> SqlAlchemyReportRepository:
+    return SqlAlchemyReportRepository(session)
+
+
+def get_platform_stats_repository(session: SessionDep) -> SqlAlchemyPlatformStatsRepository:
+    return SqlAlchemyPlatformStatsRepository(session)
+
+
+def get_audit_service(session: SessionDep) -> AuditService:
+    return AuditService(SqlAlchemyAuditRepository(session))
+
+
 def get_stock_service(session: SessionDep) -> StockService:
     """The only writer of product_stock; sales, purchases, transfers and manual
     adjustments all go through it."""
@@ -113,3 +166,18 @@ SupplierRepoDep = Annotated[SqlAlchemySupplierRepository, Depends(get_supplier_r
 SaleRepoDep = Annotated[SqlAlchemySaleRepository, Depends(get_sale_repository)]
 PurchaseRepoDep = Annotated[SqlAlchemyPurchaseRepository, Depends(get_purchase_repository)]
 StockServiceDep = Annotated[StockService, Depends(get_stock_service)]
+RoleRepoDep = Annotated[SqlAlchemyRoleRepository, Depends(get_role_repository)]
+PermissionRepoDep = Annotated[SqlAlchemyPermissionRepository, Depends(get_permission_repository)]
+AuditRepoDep = Annotated[SqlAlchemyAuditRepository, Depends(get_audit_repository)]
+PlanRepoDep = Annotated[SqlAlchemyPlanRepository, Depends(get_plan_repository)]
+SubscriptionRepoDep = Annotated[
+    SqlAlchemySubscriptionRepository, Depends(get_subscription_repository)
+]
+NotificationRepoDep = Annotated[
+    SqlAlchemyNotificationRepository, Depends(get_notification_repository)
+]
+ReportRepoDep = Annotated[SqlAlchemyReportRepository, Depends(get_report_repository)]
+PlatformStatsDep = Annotated[
+    SqlAlchemyPlatformStatsRepository, Depends(get_platform_stats_repository)
+]
+AuditServiceDep = Annotated[AuditService, Depends(get_audit_service)]

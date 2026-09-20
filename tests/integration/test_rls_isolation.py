@@ -52,8 +52,9 @@ async def _seed_tenant(session, label: str) -> tuple[uuid.UUID, uuid.UUID, uuid.
     )
     await session.execute(
         text(
-            "INSERT INTO company_members (company_id, user_id, role) "
-            "VALUES (:company_id, :user_id, 'OWNER')"
+            "INSERT INTO company_members (company_id, user_id, role_id) "
+            "SELECT :company_id, :user_id, r.id "
+            "FROM roles r WHERE r.company_id IS NULL AND r.code = 'OWNER'"
         ),
         {"company_id": company_id, "user_id": user_id},
     )

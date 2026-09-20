@@ -93,6 +93,7 @@ class SqlAlchemyProductRepository:
             cost_price=product.cost_price,
             sale_price=product.sale_price,
             is_active=product.is_active,
+            min_stock=product.min_stock,
         )
         self._session.add(model)
         await self._session.flush()
@@ -115,5 +116,6 @@ class SqlAlchemyProductRepository:
         model.cost_price = product.cost_price
         model.sale_price = product.sale_price
         model.is_active = product.is_active
+        model.min_stock = product.min_stock
         await self._session.flush()
         return product_to_domain(model)

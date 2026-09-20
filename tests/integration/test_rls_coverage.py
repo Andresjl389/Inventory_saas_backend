@@ -17,6 +17,14 @@ pytestmark = requires_db
 # it is checked separately below.
 SELF_SCOPED_TABLES = {"companies"}
 
+# The audit log is append-only: it has SELECT and INSERT policies and
+# deliberately no UPDATE or DELETE, so nobody can rewrite history.
+APPEND_ONLY_TABLES = {"audit_logs"}
+
+# No company_id of their own -- they inherit scope from the role they belong to
+# (role_permissions) or are a global catalogue (permissions, plans).
+SCOPE_BY_ASSOCIATION = {"role_permissions", "permissions", "plans"}
+
 TENANT_TABLES_WITH_COLUMN = """
     SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
     FROM pg_class c
@@ -58,8 +66,58 @@ async def test_every_tenant_table_has_all_four_policies(session):
         ).all()
     )
 
-    missing = {name: counts.get(name, 0) for name in names if counts.get(name, 0) < 4}
-    assert missing == {}, f"tables missing SELECT/INSERT/UPDATE/DELETE policies: {missing}"
+    expected = {name: 2 if name in APPEND_ONLY_TABLES else 4 for name in names}
+    missing = {
+        name: counts.get(name, 0)
+        for name, minimum in expected.items()
+        if counts.get(name, 0) < minimum
+    }
+    assert missing == {}, f"tables missing the policies they need: {missing}"
+
+
+async def test_the_audit_log_cannot_be_rewritten(session):
+    """History is append-only: no UPDATE or DELETE policy exists for anyone,
+    platform admins included."""
+    commands = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT cmd FROM pg_policies
+                WHERE schemaname = 'public' AND tablename = 'audit_logs'
+                """
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    assert set(commands) == {"SELECT", "INSERT"}
+
+
+async def test_the_global_catalogues_are_read_only_for_tenants(session):
+    """permissions and plans are readable by every tenant and writable only
+    with the platform flag raised."""
+    for table in ("permissions", "plans"):
+        rows = dict(
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT cmd, coalesce(qual, with_check) FROM pg_policies
+                        WHERE schemaname = 'public' AND tablename = :table
+                        """
+                    ),
+                    {"table": table},
+                )
+            ).all()
+        )
+        assert rows["SELECT"] == "true", f"{table} should be world-readable"
+        for command in ("INSERT", "UPDATE", "DELETE"):
+            assert "is_platform_admin" in rows[command], (
+                f"{table} {command} should require the platform flag"
+            )
 
 
 @pytest.mark.parametrize(

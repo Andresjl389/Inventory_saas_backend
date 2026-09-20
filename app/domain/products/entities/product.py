@@ -23,6 +23,7 @@ class Product(TenantEntity):
     cost_price: Decimal = Decimal("0")
     sale_price: Decimal = Decimal("0")
     is_active: bool = True
+    min_stock: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         self.sku = self.sku.strip().upper()

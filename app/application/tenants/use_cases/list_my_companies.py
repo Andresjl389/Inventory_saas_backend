@@ -19,7 +19,7 @@ class ListMyCompaniesUseCase:
             MembershipDTO(
                 company_id=company.id,
                 company_name=company.name,
-                role=memberships[company.id].role,
+                role=memberships[company.id].role_code,
                 is_active=memberships[company.id].is_active,
             )
             for company in companies

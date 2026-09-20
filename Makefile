@@ -25,6 +25,15 @@ downgrade: ## Roll back one migration
 revision: ## Autogenerate a migration: make revision m="add sales"
 	uv run alembic revision --autogenerate -m "$(m)"
 
+superuser: ## Create the first platform administrator (prompts for a password)
+	uv run python -m app.cli create-superuser --email $(email)
+
+low-stock: ## Run the low-stock sweep once, now
+	uv run python -c "import asyncio; from app.infrastructure.jobs.low_stock import sweep_low_stock; print(asyncio.run(sweep_low_stock()))"
+
+worker: ## Run the Arq worker
+	uv run arq app.infrastructure.jobs.worker.WorkerSettings
+
 run: ## Run the API with reload
 	uv run uvicorn app.main:app --reload --port 8000
 
@@ -44,4 +53,4 @@ format: ## Auto-format
 	uv run ruff format app tests alembic
 	uv run ruff check --fix app tests alembic
 
-.PHONY: help install up down stack migrate downgrade revision run test test-db lint format
+.PHONY: help install up down stack migrate downgrade revision superuser low-stock worker run test test-db lint format

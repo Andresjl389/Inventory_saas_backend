@@ -4,7 +4,6 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.domain.tenants.entities.company import CompanyStatus, DocumentType
-from app.domain.tenants.entities.company_member import CompanyRole
 
 
 class CreateCompanyCommand(BaseModel):
@@ -18,7 +17,14 @@ class CreateCompanyCommand(BaseModel):
 
 class AddMemberCommand(BaseModel):
     email: EmailStr
-    role: CompanyRole
+    # A role *code*: one of the system roles (OWNER, ADMIN, SELLER,
+    # INVENTORY_MANAGER) or a custom one this company defined.
+    role: str = Field(min_length=1, max_length=64)
+
+
+class ChangeMemberRoleCommand(BaseModel):
+    role: str = Field(min_length=1, max_length=64)
+    is_active: bool | None = None
 
 
 class CompanyDTO(BaseModel):
@@ -38,7 +44,7 @@ class CompanyDTO(BaseModel):
 class MembershipDTO(BaseModel):
     company_id: uuid.UUID
     company_name: str
-    role: CompanyRole
+    role: str
     is_active: bool
 
 
@@ -47,5 +53,6 @@ class CompanyMemberDTO(BaseModel):
     user_id: uuid.UUID
     email: str
     full_name: str
-    role: CompanyRole
+    role: str
+    role_id: uuid.UUID
     is_active: bool

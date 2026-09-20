@@ -15,6 +15,8 @@ class CreateProductCommand(BaseModel):
     category_id: uuid.UUID | None = None
     cost_price: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=4)
     sale_price: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=4)
+    # Reorder threshold. 0 (the default) means "never alert on this product".
+    min_stock: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=4)
 
 
 class UpdateProductCommand(BaseModel):
@@ -25,6 +27,7 @@ class UpdateProductCommand(BaseModel):
     category_id: uuid.UUID | None = None
     cost_price: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
     sale_price: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
+    min_stock: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
     is_active: bool | None = None
 
 
@@ -48,6 +51,7 @@ class ProductDTO(BaseModel):
     barcode: str | None
     cost_price: Decimal
     sale_price: Decimal
+    min_stock: Decimal
     is_active: bool
     created_at: datetime
     updated_at: datetime

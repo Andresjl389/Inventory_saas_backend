@@ -5,7 +5,6 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.tenants.entities.company import CompanyStatus, DocumentType
-from app.domain.tenants.entities.company_member import CompanyRole
 from app.infrastructure.database.base import (
     Base,
     TimestampMixin,
@@ -48,8 +47,10 @@ class CompanyMemberModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    role: Mapped[CompanyRole] = mapped_column(
-        enum_column(CompanyRole, "company_role"), nullable=False
+    role_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("roles.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
@@ -59,4 +60,5 @@ class CompanyMemberModel(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         UniqueConstraint("company_id", "user_id"),
         Index("ix_company_members_company_id", "company_id"),
         Index("ix_company_members_user_id", "user_id"),
+        Index("ix_company_members_role_id", "role_id"),
     )

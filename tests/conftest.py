@@ -26,23 +26,17 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("JWT_SECRET", "test-secret-value-that-is-long-enough")
 os.environ.setdefault("APP_ENV", "testing")
 
-# Truncation order does not matter (CASCADE), but keeping it child-first makes
-# the intent readable.
-TABLES = (
-    "sale_items",
-    "sales",
-    "purchase_items",
-    "purchases",
-    "stock_movements",
-    "product_stock",
-    "warehouses",
-    "customers",
-    "suppliers",
-    "products",
-    "categories",
-    "company_members",
-    "companies",
-    "users",
+# Cleanup deletes rather than truncates. TRUNCATE ... CASCADE empties *every*
+# table with a foreign key to the target, which would wipe the system roles
+# seeded by migration 0008; deleting companies cascades row-wise instead and
+# leaves the seed data (roles with company_id NULL, permissions, plans) alone.
+# Referential cascades are not subject to RLS, so one DELETE clears the tenant
+# tables underneath.
+CLEANUP_SQL = (
+    "SELECT set_config('app.is_platform_admin', 'true', true)",
+    "DELETE FROM companies",
+    "DELETE FROM users",
+    "DELETE FROM audit_logs",
 )
 
 
@@ -89,9 +83,9 @@ async def engine(migrated_database) -> AsyncIterator["object"]:
     try:
         yield db_engine
     finally:
-        # TRUNCATE is not filtered by RLS, which is exactly what cleanup needs.
         async with db_engine.begin() as conn:
-            await conn.execute(text(f"TRUNCATE {', '.join(TABLES)} RESTART IDENTITY CASCADE"))
+            for statement in CLEANUP_SQL:
+                await conn.execute(text(statement))
         await db_engine.dispose()
 
 
@@ -133,6 +127,22 @@ async def client(engine) -> AsyncIterator["object"]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:
         yield http_client
+
+
+@pytest.fixture
+async def run_job():
+    """Run a background job against the application engine.
+
+    Jobs deliberately build their own sessions (they have no request), so they
+    use the module-level engine rather than the per-test one. It has to be
+    disposed before the test's event loop closes.
+    """
+    from app.infrastructure.database.session import dispose_engine
+
+    try:
+        yield
+    finally:
+        await dispose_engine()
 
 
 @pytest.fixture

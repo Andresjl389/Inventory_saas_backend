@@ -56,6 +56,7 @@ class CreateProductUseCase:
                 barcode=command.barcode,
                 cost_price=command.cost_price,
                 sale_price=command.sale_price,
+                min_stock=command.min_stock,
             )
         )
         return ProductDTO.model_validate(product, from_attributes=True)
@@ -130,6 +131,8 @@ class UpdateProductUseCase:
             product.name = command.name.strip()
         if command.description is not None:
             product.description = command.description
+        if command.min_stock is not None:
+            product.min_stock = command.min_stock
         if command.is_active is not None:
             product.is_active = command.is_active
 

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import (
     MONEY,
+    QUANTITY,
     Base,
     TenantMixin,
     TimestampMixin,
@@ -52,6 +53,10 @@ class ProductModel(UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
+    )
+    # Reorder threshold watched by the low-stock job. 0 disables the alert.
+    min_stock: Mapped[Decimal] = mapped_column(
+        QUANTITY, nullable=False, default=Decimal("0"), server_default="0"
     )
 
     __table_args__ = (
