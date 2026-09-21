@@ -1,25 +1,93 @@
 # Guía de integración para el frontend
 
-Todo lo que hace falta para construir la interfaz contra esta API, incluido lo
-que el esquema OpenAPI no te puede decir: en qué orden van las llamadas, qué
-cabecera va en cada una y dónde están las trampas.
+Todo lo necesario para construir la interfaz contra esta API, incluido lo que el
+esquema OpenAPI no puede decirte: quién puede hacer qué, en qué orden van las
+llamadas, qué cabecera lleva cada una y dónde están las trampas.
 
 - **Base URL**: `http://localhost:8000` en desarrollo
-- **Prefijo**: todos los endpoints de negocio cuelgan de `/api/v1`
-- **Documentación viva**: `GET /docs` (Swagger UI) y `GET /api/v1/openapi.json`
-- **Tipos**: genera el cliente desde el esquema en vez de escribirlo a mano
+- **Prefijo**: todo el negocio cuelga de `/api/v1`
+- **Documentación viva**: `GET /docs` (Swagger) y `GET /api/v1/openapi.json`
+- **Tipos**: genera el cliente, no lo escribas
 
 ```bash
 npx openapi-typescript http://localhost:8000/api/v1/openapi.json -o src/api/schema.d.ts
 ```
 
-Este documento explica el *cómo*; el esquema es la fuente de verdad del *qué*.
+El esquema es la fuente de verdad de *qué* campos hay. Esta guía explica el
+*cómo* y el *quién*.
 
 ---
 
-## 1. Los dos ejes: quién eres y en qué empresa estás
+## 1. Los tres niveles de administración
 
-Es el concepto que hay que entender antes de escribir la primera pantalla.
+Esto es lo primero que hay que entender, porque determina cuántas aplicaciones
+estás construyendo (spoiler: dos).
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  SUPER ADMINISTRADOR  ·  users.is_superuser = true          │
+│  Opera el SaaS. No pertenece a ninguna empresa.             │
+│                                                              │
+│  · Crea las empresas (es el único que puede)                │
+│  · Nombra al dueño de cada una                              │
+│  · Supervisa todas: métricas, planes, suspensión            │
+│  · Entra a cualquiera para diagnosticar o cargarle datos    │
+│  · Lee la auditoría de toda la plataforma                   │
+└─────────────────────────────────────────────────────────────┘
+                              │ crea
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  ADMINISTRADOR DE EMPRESA  ·  rol OWNER (o ADMIN)           │
+│  Manda dentro de su empresa. No ve ninguna otra.            │
+│                                                              │
+│  · Arma su equipo: da de alta, cambia roles, desactiva      │
+│  · Crea roles propios y decide sus permisos                 │
+│  · Todo el negocio: catálogo, inventario, ventas, compras   │
+│  · Reportes y auditoría de su empresa                       │
+└─────────────────────────────────────────────────────────────┘
+                              │ da de alta
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│  MIEMBRO  ·  SELLER, INVENTORY_MANAGER, o un rol propio     │
+│  Hace su trabajo, con los permisos que su rol le concede.   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Quién puede qué
+
+| Acción | Super admin | Admin de empresa | Miembro |
+|---|:--:|:--:|:--:|
+| Crear una empresa | ✅ | ❌ | ❌ |
+| Ver **todas** las empresas | ✅ | ❌ | ❌ |
+| Suspender / reactivar una empresa | ✅ | ❌ | ❌ |
+| Asignar plan y suscripción | ✅ | ❌ | ❌ |
+| Vincular a alguien a **cualquier** empresa | ✅ | ❌ | ❌ |
+| Crear cuentas de usuario | ✅ | ✅ (al dar de alta) | ❌ |
+| Gestionar miembros de **su** empresa | ✅ | ✅ | ❌ |
+| Crear y editar roles propios | ✅ | ✅ | ❌ |
+| Operar el negocio (ventas, inventario…) | ✅ * | ✅ | según su rol |
+| Auditoría de la plataforma | ✅ | ❌ | ❌ |
+| Auditoría de su empresa | ✅ | ✅ | con `audit.read` |
+
+\* El super admin opera dentro de una empresa mandando su `X-Company-ID`, igual
+que cualquiera. **Nunca ve dos empresas a la vez**: aunque supervise todas,
+cada petición de datos de negocio está limitada a una sola.
+
+### Dos aplicaciones, no una
+
+En la práctica vas a construir:
+
+1. **La app del negocio** — catálogo, inventario, ventas, compras, equipo,
+   roles, reportes. La usan el administrador de empresa y sus miembros.
+2. **La consola de plataforma** — empresas, usuarios, planes, supervisión,
+   auditoría global. La usa solo el super admin.
+
+Pueden vivir en el mismo proyecto con rutas distintas (`/app` y `/admin`), pero
+son públicos distintos, con menús y navegación distintos.
+
+---
+
+## 2. Los dos ejes: quién eres y en qué empresa estás
 
 ```text
 Authorization: Bearer <access_token>   →  quién eres          (siempre)
@@ -28,18 +96,18 @@ X-Company-ID: <uuid>                   →  en qué empresa      (casi siempre)
 
 Un usuario puede pertenecer a **varias empresas**. El token dice quién es, no
 dónde está trabajando. El backend nunca confía en la cabecera por sí sola:
-valida que existas como miembro activo de esa empresa antes de dejarte hacer
-nada, en cada petición.
+valida que seas miembro activo de esa empresa antes de dejarte hacer nada, en
+cada petición.
 
-Solo tres grupos de endpoints **no** llevan `X-Company-ID`:
+Tres grupos **no** llevan `X-Company-ID`:
 
 | Grupo | Por qué |
 |---|---|
 | `/api/v1/auth/*` | Todavía no hay empresa elegida |
-| `GET`/`POST /api/v1/companies` | Es la lista para elegir, y la creación |
-| `/api/v1/admin/*` | Son de plataforma; la empresa va en la ruta cuando aplica |
+| `GET /api/v1/companies` | Es la lista para elegir |
+| `/api/v1/admin/*` | Son de plataforma; la empresa va en la ruta |
 
-Todo lo demás la exige. Si falta:
+Si falta donde hace falta:
 
 ```json
 {"error": {"code": "COMPANY_REQUIRED",
@@ -51,139 +119,187 @@ Ponla en el cliente HTTP una vez, no en cada llamada.
 
 ---
 
-## 2. Autenticación
+## 3. Cómo nace una empresa y cómo entra la gente
 
-### Registro
+**No hay autoservicio.** Registrarse crea una cuenta y nada más. Las empresas
+las crea el super admin, que nombra a su dueño en la misma llamada.
 
-`POST /api/v1/auth/register`
-
-```json
-{"email": "ana@example.com", "password": "una-clave-larga",
- "first_name": "Ana", "last_name": "Gómez", "company_name": "Ferretería Demo"}
+```text
+1. El super admin crea la empresa               POST /admin/companies
+   └─ la empresa nace con un OWNER designado
+2. Ese OWNER inicia sesión                      POST /auth/login
+   └─ GET /companies le devuelve su empresa
+3. El OWNER arma su equipo                      POST /companies/current/members
+   └─ crea la cuenta si la persona no la tiene
+4. El OWNER define roles propios                POST /roles
 ```
 
-`company_name` es opcional. Si va, se crea la empresa y quien se registra queda
-como `OWNER`. Si no va, la cuenta existe pero sin ninguna empresa — es el caso
-de alguien a quien van a invitar.
+### Registro: solo una cuenta
 
-```json
-{"user": {"id": "0f85...", "email": "ana@example.com", "first_name": "Ana",
-          "last_name": "Gómez", "is_active": true, "created_at": "..."},
- "company_id": "3d05..."}
+```http
+POST /api/v1/auth/register
+{"email": "ana@x.com", "password": "clave-larga",
+ "first_name": "Ana", "last_name": "Gómez"}
 ```
 
-### Login
-
-`POST /api/v1/auth/login` → `{"email", "password"}`
-
 ```json
-{"access_token": "eyJ...", "refresh_token": "eyJ...",
- "token_type": "bearer", "expires_in": 900}
+{"id": "8e30…", "email": "ana@x.com", "first_name": "Ana",
+ "last_name": "Gómez", "is_active": true, "created_at": "…"}
 ```
 
-**El access token dura 15 minutos** (`expires_in` en segundos). El refresh dura
-14 días. Necesitas un interceptor de refresco desde el primer día; no es algo
-que se deje para después.
+> **Cambió respecto a versiones anteriores.** El registro aceptaba
+> `company_name` y creaba un tenant a partir de ese texto, así que cada error
+> de digitación era una empresa nueva. Ese campo ya no existe; si lo mandas, se
+> ignora. La respuesta tampoco trae `company_id`.
 
-### Refresco
+Una cuenta recién creada **no pertenece a ninguna empresa**: `GET /companies`
+devuelve `[]`. Esa lista vacía es la señal para mostrar la pantalla de
+«todavía no perteneces a ninguna empresa; pídele a tu administrador que te
+agregue».
 
-`POST /api/v1/auth/refresh` → `{"refresh_token": "..."}` → un par nuevo.
+`POST /api/v1/companies` **no existe** (responde `405`). La regla también está
+en la base de datos: la policy de RLS sobre `companies` exige el flag de
+plataforma para insertar, así que ningún endpoint futuro puede reabrir la
+puerta por descuido.
 
-Devuelve **ambos** tokens: guarda los dos. Errores posibles:
+### El super admin crea la empresa
 
-| Código | Qué hacer |
-|---|---|
-| `TOKEN_EXPIRED` | Cerrar sesión y mandar al login |
-| `INVALID_TOKEN` | Igual |
-| `INACTIVE_USER` | La cuenta fue desactivada: login con mensaje |
+```http
+POST /api/v1/admin/companies
+Authorization: Bearer <token del super admin>
 
-### Sesión actual
+{"name": "Ferretería Central",
+ "owner_email": "ana@x.com",
+ "owner_password": "clave-inicial",   // solo si la cuenta no existe
+ "plan_code": "STANDARD"}
+```
 
-`GET /api/v1/auth/me` → el usuario del token. Úsalo al arrancar la app para
-saber si la sesión sigue viva.
+```json
+{
+  "company": {"id": "9d86…", "name": "Ferretería Central", "status": "ACTIVE", "…": "…"},
+  "owner": {"id": "8e30…", "email": "ana@x.com", "is_superuser": false, "…": "…"},
+  "owner_created": false,
+  "subscription": {"status": "TRIALING", "current_period_end": "…", "…": "…"}
+}
+```
 
-### Logout
+- Si `owner_email` ya tiene cuenta, esa persona pasa a ser dueña y
+  `owner_password` sobra.
+- Si no la tiene, la contraseña es obligatoria, o llega
+  `422 OWNER_PASSWORD_REQUIRED`.
+- **`owner_created` te dice si hay que entregarle credenciales.** Muéstralo en
+  la pantalla de confirmación.
 
-`POST /api/v1/auth/logout` → `204`.
+### El administrador de empresa arma su equipo
 
-**Es sin estado**: el backend no revoca nada todavía. El cliente borra sus
-tokens. Un access token robado sigue sirviendo hasta que expira (15 min). La
-revocación real (denylist de `jti` en Redis) está pendiente en el backend.
+```http
+POST /api/v1/companies/current/members
+Authorization: Bearer <token del OWNER>
+X-Company-ID: 9d86…
 
-### Dónde guardar los tokens
+{"email": "luis@x.com", "role": "SELLER",
+ "password": "clave-inicial", "first_name": "Luis", "last_name": "Paz"}
+```
 
-`localStorage` es simple y vulnerable a XSS. Si la app maneja dinero — y esta lo
-hace — vale la pena el esfuerzo de guardar el access token en memoria y el
-refresh en una cookie `httpOnly`, lo que requiere un pequeño proxy en el
-frontend. Decídelo antes de tener pantallas construidas encima.
+```json
+{"id": "4d0b…", "user_id": "75f6…", "email": "luis@x.com",
+ "full_name": "Luis Paz", "role": "SELLER", "role_id": "2cc5…", "is_active": true}
+```
+
+- Si el correo **ya tiene cuenta**, se vincula esa cuenta y `password` sobra.
+- Si **no la tiene**, hacen falta `password` y `first_name`. Si no van:
+
+```json
+{"error": {"code": "ACCOUNT_DETAILS_REQUIRED",
+           "message": "No account exists for that email address. Send a password (and optionally a name) to create it.",
+           "details": {}}}
+```
+
+Diseña el formulario para eso: pide el correo, y si el backend responde
+`ACCOUNT_DETAILS_REQUIRED`, despliega los campos de nombre y contraseña. O
+pídelos siempre y déjalos opcionales.
+
+> **Todavía no hay invitaciones por correo.** Quien da de alta fija la primera
+> contraseña y la entrega por fuera. Nada verifica que la dirección sea de esa
+> persona. Ponlo en la copia de la pantalla para que el administrador lo sepa.
+
+### Cambiar el rol de alguien
+
+```http
+PATCH /api/v1/companies/current/members/{user_id}
+{"role": "INVENTORY_MANAGER", "is_active": true}
+```
+
+Nadie puede cambiarse el rol a sí mismo (`CANNOT_CHANGE_OWN_ROLE`): así el
+último dueño no se degrada y deja la empresa sin administración. Deshabilita el
+control en la fila del usuario actual.
+
+### El super admin también puede vincular por id
+
+La vía de reparación, cuando una empresa se queda sin administrador:
+
+```http
+POST  /api/v1/admin/companies/{company_id}/members    {"email", "role", …}
+PATCH /api/v1/admin/companies/{company_id}/members/{user_id}   {"role", "is_active"}
+```
+
+Mismo cuerpo que la versión de empresa, pero la empresa va **en la ruta** y no
+hace falta `X-Company-ID`. Ambas quedan en la auditoría (`MEMBER_ADDED`,
+`MEMBER_ROLE_CHANGED`).
 
 ---
 
-## 3. Elegir empresa
+## 4. Detectar el rol en el frontend
 
-Después del login, antes de cualquier otra cosa:
+Al arrancar la sesión necesitas responder dos preguntas.
+
+### ¿Es super admin?
+
+`/auth/me` **no** expone `is_superuser`. La forma de saberlo es preguntar:
+
+```ts
+const isPlatformAdmin = async () => {
+  try {
+    await api.get("/admin/stats");
+    return true;
+  } catch (e) {
+    if (errorCode(e) === "NOT_PLATFORM_ADMIN") return false;
+    throw e;
+  }
+};
+```
+
+Un `403 NOT_PLATFORM_ADMIN` significa «no es operador»: no muestres la consola
+de plataforma. (Es incómodo; exponer el campo en `/auth/me` es un cambio chico
+en el backend si prefieres eso.)
+
+### ¿Qué puede hacer dentro de su empresa?
 
 ```http
-GET /api/v1/companies
-Authorization: Bearer <token>
+GET /api/v1/companies        → tu rol en cada empresa (campo "role")
+GET /api/v1/roles            → los roles de esta empresa, con sus permisos
 ```
 
-```json
-[{"company_id": "3d05...", "company_name": "Demo", "role": "OWNER", "is_active": true}]
-```
+Cruza tu `role` con el rol correspondiente de `/roles` para obtener tu lista de
+permisos. `OWNER` trae el comodín `"*"`.
 
-- **Una sola** → entra directo, guarda el `company_id`.
-- **Varias** → selector. Guarda la elección (`localStorage`) y respétala al
-  volver.
-- **Ninguna** → pantalla de "todavía no perteneces a ninguna empresa". Puede
-  crear una con `POST /api/v1/companies` o esperar una invitación.
-
-Cambiar de empresa es cambiar la cabecera y **recargar todo el estado**: no hay
-nada compartido entre empresas y mezclar datos de dos es el bug más caro que
-puedes introducir. Lo más seguro es limpiar la caché del cliente de datos
-(React Query: `queryClient.clear()`) al cambiar.
-
-### Si la empresa queda suspendida
-
-El operador de la plataforma puede suspender una empresa. A partir de la
-siguiente petición de sus miembros:
-
-```json
-{"error": {"code": "INVALID_COMPANY", "message": "Company is suspended", "details": {}}}
-```
-
-Trátalo como un estado de la aplicación, no como un error suelto: pantalla
-explicativa y vuelta al selector de empresa.
-
----
-
-## 4. Permisos: cómo construir la UI
-
-Los roles viven en la base de datos. Cada empresa tiene cuatro del sistema
-(`OWNER`, `ADMIN`, `SELLER`, `INVENTORY_MANAGER`) y puede crear los suyos.
-
-**Los permisos se leen en cada petición**, así que un cambio de rol surte efecto
-sin que el usuario vuelva a iniciar sesión. Tu UI debería reflejar eso: no
-guardes los permisos en el token (no están ahí) ni los caches para siempre.
-
-### Saber qué puede hacer el usuario actual
-
-```http
-GET /api/v1/roles          # los roles de esta empresa, con sus permisos
-GET /api/v1/companies      # tu rol en cada empresa (el campo "role")
-```
-
-Cruza tu `role` de `/companies` con el rol correspondiente de `/roles` para
-obtener tu lista de permisos. `OWNER` tiene el comodín `"*"`:
+Un detalle que muerde: `/roles` devuelve **primero los del sistema**, y una
+empresa puede definir un rol propio con el mismo código. Al buscar el tuyo,
+prefiere el que tiene `company_id` no nulo — es el que el backend aplica.
 
 ```ts
 const can = (permission: string) =>
   myPermissions.includes("*") || myPermissions.includes(permission);
 ```
 
+**Los permisos se leen en cada petición**, así que un cambio de rol surte
+efecto sin volver a iniciar sesión. No los guardes en el token (no están ahí) ni
+los caches indefinidamente: recárgalos al entrar y al cambiar de empresa.
+
 ### Regla de oro
 
-Esconder un botón es cortesía, no seguridad. El backend rechaza igual:
+Esconder un botón es cortesía, no seguridad. El backend rechaza igual y te dice
+exactamente qué faltó:
 
 ```json
 {"error": {"code": "INSUFFICIENT_ROLE",
@@ -191,31 +307,127 @@ Esconder un botón es cortesía, no seguridad. El backend rechaza igual:
            "details": {"required_permission": "products.create", "role": "SELLER"}}}
 ```
 
-`details.required_permission` viene siempre: úsalo para un mensaje útil
-("necesitas el permiso *Crear productos*") en vez de un "no autorizado" seco.
+Usa `details.required_permission` para un mensaje útil («necesitas el permiso
+*Crear productos*») en vez de un «no autorizado» seco.
 
-### Catálogo de permisos
+---
+
+## 5. Roles y permisos
+
+Los roles viven en la base de datos. Cada empresa tiene cuatro del sistema y
+puede crear los suyos.
+
+| Rol del sistema | Para quién | Resumen |
+|---|---|---|
+| `OWNER` | El dueño que nombra el super admin | Comodín `*`: todo dentro de su empresa |
+| `ADMIN` | Segundo al mando | Todo menos el comodín |
+| `INVENTORY_MANAGER` | Bodega y compras | Catálogo, inventario, compras, reportes |
+| `SELLER` | Mostrador | Ver catálogo y stock, crear ventas, clientes |
+
+Los roles del sistema son **iguales para todas las empresas y nadie los puede
+editar** (`403 SYSTEM_ROLE_IMMUTABLE`). Quien quiera «ADMIN menos algo» crea un
+rol propio.
+
+### Roles propios
+
+```http
+POST /api/v1/roles
+{"code": "cajero", "name": "Cajero",
+ "permissions": ["company.read", "products.read", "sales.read", "sales.create"]}
+```
+
+- El `code` se normaliza a mayúsculas: `cajero` → `CAJERO`.
+- Un rol propio con el mismo código que uno del sistema **gana** dentro de esa
+  empresa, así que se puede endurecer un built-in localmente.
+- Solo un `OWNER` puede crear un rol con el comodín `*`
+  (`CANNOT_GRANT_WILDCARD`): si no, un `ADMIN` podría fabricarse un rol más
+  poderoso que el suyo.
+- Un rol que todavía tiene miembros no se borra (`409 ROLE_IN_USE`).
+- `PATCH` reemplaza la lista de permisos **entera**, no hace merge.
 
 `GET /api/v1/roles/permissions` devuelve los 34 permisos con etiqueta y módulo
-— es lo que necesitas para construir la pantalla de edición de roles.
+— es lo que necesitas para la pantalla de edición.
 
 | Módulo | Permisos |
 |---|---|
 | system | `*` |
-| company | `company.read`, `company.update`, `members.read`, `members.manage`, `roles.read`, `roles.manage` |
-| catalog | `categories.read`, `categories.write`, `products.read`, `products.create`, `products.update`, `products.delete` |
-| inventory | `warehouses.read`, `warehouses.write`, `inventory.read`, `inventory.adjust`, `inventory.transfer` |
-| partners | `customers.read`, `customers.write`, `suppliers.read`, `suppliers.write` |
-| sales | `sales.read`, `sales.create`, `sales.cancel` |
-| purchases | `purchases.read`, `purchases.create`, `purchases.cancel` |
-| imports | `imports.read`, `imports.run` |
-| files | `files.read`, `files.write` |
+| company | `company.read` `company.update` `members.read` `members.manage` `roles.read` `roles.manage` |
+| catalog | `categories.read` `categories.write` `products.read` `products.create` `products.update` `products.delete` |
+| inventory | `warehouses.read` `warehouses.write` `inventory.read` `inventory.adjust` `inventory.transfer` |
+| partners | `customers.read` `customers.write` `suppliers.read` `suppliers.write` |
+| sales | `sales.read` `sales.create` `sales.cancel` |
+| purchases | `purchases.read` `purchases.create` `purchases.cancel` |
+| imports | `imports.read` `imports.run` |
+| files | `files.read` `files.write` |
 | reports | `reports.read` |
 | audit | `audit.read` |
 
 ---
 
-## 5. Convenciones de la API
+## 6. Autenticación y sesión
+
+```text
+POST /api/v1/auth/register    público    crea una cuenta
+POST /api/v1/auth/login       público    devuelve el par de tokens
+POST /api/v1/auth/refresh     público    rota el par
+GET  /api/v1/auth/me          bearer     el usuario del token
+POST /api/v1/auth/logout      bearer     204, sin estado
+```
+
+```json
+{"access_token": "eyJ…", "refresh_token": "eyJ…",
+ "token_type": "bearer", "expires_in": 900}
+```
+
+**El access token dura 15 minutos**; el refresh, 14 días. Necesitas el
+interceptor de refresco desde el primer día. `/auth/refresh` devuelve **ambos**
+tokens: guarda los dos.
+
+| Código | Qué hacer |
+|---|---|
+| `INVALID_CREDENTIALS` | Correo o clave mal |
+| `INACTIVE_USER` | Cuenta desactivada: login con mensaje |
+| `TOKEN_EXPIRED` / `INVALID_TOKEN` | Cerrar sesión, ir al login |
+
+El logout **no revoca nada**: el cliente borra sus tokens, pero uno robado
+sirve hasta que expira.
+
+### Dónde guardar los tokens
+
+`localStorage` es simple y vulnerable a XSS. Si la app maneja dinero — y esta lo
+hace — vale el esfuerzo de dejar el access token en memoria y el refresh en una
+cookie `httpOnly`. Decídelo antes de tener pantallas construidas encima.
+
+---
+
+## 7. Elegir empresa
+
+Después del login, antes de cualquier otra cosa:
+
+```json
+[{"company_id": "9d86…", "company_name": "Ferretería Central",
+  "role": "OWNER", "is_active": true}]
+```
+
+- **Una sola** → entra directo y guarda el `company_id`.
+- **Varias** → selector; recuerda la elección y respétala al volver.
+- **Ninguna** → pantalla de «todavía no perteneces a ninguna empresa».
+
+> **Cuidado.** Cambiar de empresa es cambiar la cabecera *y recargar todo el
+> estado*. No hay nada compartido entre empresas, y mezclar datos de dos es el
+> bug más caro que puedes introducir. Limpia la caché del cliente de datos
+> (`queryClient.clear()`) al cambiar.
+
+### Si la empresa queda suspendida
+
+El super admin puede suspenderla. Desde la siguiente petición de sus miembros
+llega `403 INVALID_COMPANY`. Trátalo como un estado de la aplicación: pantalla
+explicativa y vuelta al selector. El super admin **sí** sigue pudiendo entrar,
+que suele ser el motivo por el que la está mirando.
+
+---
+
+## 8. Convenciones de la API
 
 ### Los decimales son strings. Siempre.
 
@@ -225,49 +437,54 @@ Esconder un botón es cortesía, no seguridad. El backend rechaza igual:
 
 Cuatro decimales, como texto. **No uses `parseFloat` para dinero.** Usa
 `decimal.js`, `dinero.js` o `BigInt` sobre centavos. Un `0.1 + 0.2` en una
-factura es un problema real, no teórico.
+factura es un problema real.
 
-Al **enviar** también manda strings: `{"cost_price": "8000.50"}`. El backend
-acepta número o string, pero un `Number` grande en JavaScript ya perdió
-precisión antes de salir de tu código.
+Al **enviar** también manda strings. El backend acepta número o string, pero un
+`Number` grande en JavaScript ya perdió precisión antes de salir de tu código.
 
 ### Fechas
 
-ISO 8601 en UTC con `Z`: `"2026-09-20T23:05:45.130642Z"`. Conviértelas a la zona
+ISO 8601 en UTC con `Z`: `"2026-09-21T02:36:53.241334Z"`. Convierte a la zona
 del usuario para mostrar; manda UTC de vuelta.
 
 ### Paginación
-
-Toda lista larga tiene la misma forma:
 
 ```json
 {"items": [...], "total": 42, "page": 1, "size": 20, "pages": 3}
 ```
 
-Parámetros: `?page=1&size=20`. **`size` máximo 100.** Las listas cortas y
-acotadas (categorías, bodegas, roles) devuelven un array pelado, sin envoltorio.
+`?page=1&size=20`, con `size` máximo **100**. Las listas cortas y acotadas
+(categorías, bodegas, roles, miembros) devuelven un array pelado.
 
-### Identificadores
+### X-Request-ID
 
-Todos UUID v4 en texto. No asumas orden ni los uses como número.
+Cada respuesta trae uno y aparece en los logs del backend. Muéstralo en tus
+pantallas de error — ahorra horas de diagnóstico.
 
-### `X-Request-ID`
+### Enumeraciones
 
-Cada respuesta trae uno. Si el usuario reporta un problema, ese id aparece en
-los logs del backend. Muéstralo en tus pantallas de error — te ahorra horas.
+| Enum | Valores |
+|---|---|
+| `CompanyStatus` | `ACTIVE` `SUSPENDED` `INACTIVE` |
+| `DocumentType` | `NIT` `CC` `CE` `PASSPORT` `RUT` `OTHER` |
+| `SaleStatus` | `DRAFT` `COMPLETED` `CANCELLED` `REFUNDED` |
+| `PurchaseStatus` | `DRAFT` `COMPLETED` `CANCELLED` |
+| `MovementType` | `PURCHASE` `SALE` `RETURN` `ADJUSTMENT` `TRANSFER_IN` `TRANSFER_OUT` |
+| `ReferenceType` | `SALE` `PURCHASE` `TRANSFER` `MANUAL` |
+| `SubscriptionStatus` | `TRIALING` `ACTIVE` `PAST_DUE` `CANCELLED` |
+| `NotificationType` | `LOW_STOCK` `SUBSCRIPTION` `REPORT_READY` `SYSTEM` |
+| `FileOwnerType` | `PRODUCT` `COMPANY` `SALE` `PURCHASE` `IMPORT` `EXPORT` `REPORT` |
+| `ImportEntity` | `CATEGORIES` `PRODUCTS` `WAREHOUSES` `CUSTOMERS` `SUPPLIERS` `STOCK` |
+| `ImportStatus` | `ANALYZED` `VALIDATED` `COMPLETED` `FAILED` `CANCELLED` |
 
-```
-x-request-id: 58c6442f-f636-4145-90c8-1f8ec1c540ff
-```
-
-También puedes mandarlo tú y el backend lo respeta, lo que permite correlacionar
-una acción del usuario con varias llamadas.
+Tradúcelos en el frontend; la API habla en códigos.
 
 ---
 
-## 6. Errores
+## 9. Errores
 
-**Todos** los errores de la API tienen la misma envoltura:
+**Todos** tienen la misma envoltura. Nunca parsees el `message`; ramifica por
+`code`.
 
 ```json
 {"error": {"code": "DUPLICATE_SKU",
@@ -275,216 +492,162 @@ una acción del usuario con varias llamadas.
            "details": {}}}
 ```
 
-Nunca parsees el `message` (puede cambiar). Ramifica por `code`.
-
-### Errores de validación de esquema
-
-`VALIDATION_ERROR` (422) trae los campos, y `location` te dice exactamente
-dónde, para pintar el error junto al input:
-
-```json
-{"error": {"code": "VALIDATION_ERROR", "message": "Request validation failed",
-  "details": {"fields": [
-    {"location": ["body", "sku"], "message": "String should have at least 1 character",
-     "type": "string_too_short"}]}}}
-```
-
-### Manejo por código HTTP
-
-| HTTP | Qué significa | Qué hace la UI |
+| HTTP | Qué pasó | Qué hace la UI |
 |---|---|---|
 | 401 | Token inválido o expirado | Refrescar; si falla, login |
 | 403 `INSUFFICIENT_ROLE` | Le falta un permiso | Mensaje con `required_permission` |
 | 403 `INVALID_MEMBERSHIP` | No pertenece a esa empresa | Selector de empresa |
-| 403 `INVALID_COMPANY` | Empresa suspendida/inactiva | Pantalla de empresa bloqueada |
+| 403 `INVALID_COMPANY` | Empresa suspendida | Pantalla de empresa bloqueada |
 | 403 `NOT_PLATFORM_ADMIN` | Ruta de plataforma | Ocultar la consola de admin |
-| 404 | No existe **o no es de esta empresa** | "No encontrado" |
-| 409 | Choque de unicidad | Error junto al campo (SKU, documento, nombre) |
+| 404 | No existe **o no es de esta empresa** | «No encontrado» |
+| 405 | La ruta no existe (p. ej. `POST /companies`) | Bug del cliente |
+| 409 | Choque de unicidad | Error junto al campo |
 | 422 | Regla de negocio o validación | Mensaje específico |
 | 503 | Dependencia caída | Reintentar |
 
-Un detalle importante del 404: si pides el producto de **otra** empresa, la
-respuesta es `404`, no `403`. Es deliberado — un 403 confirmaría que el
-identificador existe. Para tu UI es simplemente "no existe".
+Sobre el `404`: pedir el producto de **otra** empresa devuelve 404, no 403. Es
+deliberado — un 403 confirmaría que ese id existe. Para tu UI es «no existe».
 
 ### Errores con contexto útil
 
-Varios traen datos que vale la pena mostrar:
+```json
+{"error": {"code": "INSUFFICIENT_STOCK",
+  "details": {"available": "8.0000", "requested": "999.0000",
+              "product_id": "e3de…", "warehouse_id": "386f…"}}}
+```
+
+Con eso dices «solo quedan 8 unidades» en vez de «error».
+
+### Validación de esquema
+
+`VALIDATION_ERROR` trae `location` para pintar el error junto al input:
 
 ```json
-{"error": {"code": "INSUFFICIENT_STOCK", "message": "Not enough stock for this operation",
-  "details": {"product_id": "e3de...", "warehouse_id": "386f...",
-              "available": "8.0000", "requested": "999.0000"}}}
+{"error": {"code": "VALIDATION_ERROR", "details": {"fields": [
+  {"location": ["body", "sku"], "message": "String should have at least 1 character",
+   "type": "string_too_short"}]}}}
 ```
 
-Con eso puedes decir "solo quedan 8 unidades" en vez de "error".
+### Los que más vas a tocar
 
-### Catálogo
-
-Hay ~75 códigos. Los que más vas a tocar:
-
-**Auth**: `INVALID_CREDENTIALS`, `INACTIVE_USER`, `TOKEN_EXPIRED`, `INVALID_TOKEN`,
-`EMAIL_ALREADY_REGISTERED`
-**Tenant**: `COMPANY_REQUIRED`, `INVALID_MEMBERSHIP`, `INVALID_COMPANY`,
-`INSUFFICIENT_ROLE`
-**Catálogo**: `DUPLICATE_SKU`, `DUPLICATE_BARCODE`, `DUPLICATE_CATEGORY_NAME`,
-`PRODUCT_NOT_FOUND`, `CATEGORY_NOT_FOUND`
-**Inventario**: `INSUFFICIENT_STOCK`, `SAME_WAREHOUSE_TRANSFER`,
-`INACTIVE_WAREHOUSE`, `WAREHOUSE_NOT_FOUND`
-**Ventas/compras**: `EMPTY_SALE`, `INVALID_SALE_TRANSITION`, `INACTIVE_CUSTOMER`,
-`INACTIVE_PRODUCT`, `INVALID_PURCHASE_TRANSITION`
+**Cuentas y empresas**: `EMAIL_ALREADY_REGISTERED`, `ACCOUNT_DETAILS_REQUIRED`,
+`OWNER_PASSWORD_REQUIRED`, `MEMBERSHIP_ALREADY_EXISTS`, `CANNOT_CHANGE_OWN_ROLE`,
+`CANNOT_DEMOTE_SELF`, `CANNOT_DEACTIVATE_SELF`
 **Roles**: `SYSTEM_ROLE_IMMUTABLE`, `DUPLICATE_ROLE_CODE`, `ROLE_IN_USE`,
-`UNKNOWN_PERMISSION`, `CANNOT_GRANT_WILDCARD`, `CANNOT_CHANGE_OWN_ROLE`
-**Archivos**: `FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`, `EMPTY_FILE`,
-`OWNER_ID_REQUIRED`
+`UNKNOWN_PERMISSION`, `CANNOT_GRANT_WILDCARD`, `ROLE_NOT_FOUND`
+**Catálogo**: `DUPLICATE_SKU`, `DUPLICATE_BARCODE`, `DUPLICATE_CATEGORY_NAME`
+**Inventario**: `INSUFFICIENT_STOCK`, `SAME_WAREHOUSE_TRANSFER`, `INACTIVE_WAREHOUSE`
+**Ventas/compras**: `EMPTY_SALE`, `INVALID_SALE_TRANSITION`, `INACTIVE_CUSTOMER`,
+`INACTIVE_PRODUCT`
+**Archivos**: `FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`, `EMPTY_FILE`
 **Importación**: `MISSING_REQUIRED_COLUMNS`, `UNKNOWN_TARGET_FIELD`,
-`IMPORT_NOT_OPEN`, `UNREADABLE_FILE`, `NO_HEADER_ROW`, `IMPORT_TOO_LARGE`
-
-La lista completa sale de `grep -rn 'code = "' app/` en el backend.
+`IMPORT_NOT_OPEN`, `UNREADABLE_FILE`
 
 ---
 
-## 7. Enumeraciones
+## 10. Flujos de negocio
 
-Valores exactos, tal cual viajan:
-
-| Enum | Valores |
-|---|---|
-| `CompanyStatus` | `ACTIVE`, `SUSPENDED`, `INACTIVE` |
-| `DocumentType` | `NIT`, `CC`, `CE`, `PASSPORT`, `RUT`, `OTHER` |
-| `SaleStatus` | `DRAFT`, `COMPLETED`, `CANCELLED`, `REFUNDED` |
-| `PurchaseStatus` | `DRAFT`, `COMPLETED`, `CANCELLED` |
-| `MovementType` | `PURCHASE`, `SALE`, `RETURN`, `ADJUSTMENT`, `TRANSFER_IN`, `TRANSFER_OUT` |
-| `ReferenceType` | `SALE`, `PURCHASE`, `TRANSFER`, `MANUAL` |
-| `SubscriptionStatus` | `TRIALING`, `ACTIVE`, `PAST_DUE`, `CANCELLED` |
-| `NotificationType` | `LOW_STOCK`, `SUBSCRIPTION`, `REPORT_READY`, `SYSTEM` |
-| `FileOwnerType` | `PRODUCT`, `COMPANY`, `SALE`, `PURCHASE`, `IMPORT`, `EXPORT`, `REPORT` |
-| `ImportEntity` | `CATEGORIES`, `PRODUCTS`, `WAREHOUSES`, `CUSTOMERS`, `SUPPLIERS`, `STOCK` |
-| `ImportStatus` | `ANALYZED`, `VALIDATED`, `COMPLETED`, `FAILED`, `CANCELLED` |
-
-Tradúcelos en el frontend; la API habla en códigos.
-
----
-
-## 8. Flujos completos
-
-### 8.1 Arranque de la aplicación
-
-```text
-¿hay tokens? ──no──> /login
-      │sí
-      ▼
-GET /auth/me ──401──> refrescar ──falla──> /login
-      │ok
-      ▼
-GET /companies
-      ├─ 0 empresas ──> pantalla "sin empresa"
-      ├─ 1 empresa  ──> entrar
-      └─ N empresas ──> selector (recordar la última)
-      ▼
-GET /roles  →  permisos del usuario  →  render del menú
-```
-
-### 8.2 Venta (punto de venta)
-
-La forma corta hace todo en **una** llamada atómica:
+### Venta (punto de venta)
 
 ```http
 POST /api/v1/sales
-{
-  "warehouse_id": "...",
-  "customer_id": "...",          // opcional
-  "complete": true,
-  "items": [{"product_id": "...", "quantity": "2"}]
-}
+{"warehouse_id": "…", "customer_id": "…", "complete": true,
+ "items": [{"product_id": "…", "quantity": "2"}]}
 ```
 
-- Si omites `unit_price`, se usa el `sale_price` vigente del producto. Mándalo
-  solo cuando haya un precio negociado.
-- `complete: true` bloquea el stock, valida disponibilidad, crea la venta, sus
-  líneas y los movimientos, y descuenta — **todo en una transacción**. Si una
-  línea se queda sin stock, **la venta entera se revierte**. No existe el estado
-  a medias, así que no lo modeles en la UI.
-- Los totales los calcula el backend desde las líneas. Lo que mandes como total
-  se ignora: no se puede cobrar algo distinto a lo que suman los ítems.
+- Sin `unit_price`, se usa el `sale_price` vigente del producto. Mándalo solo
+  cuando haya precio negociado.
+- `complete: true` bloquea el stock, valida, crea la venta, sus líneas y los
+  movimientos, y descuenta — **todo en una transacción**.
+- Los totales los calcula el backend desde las líneas: no se puede cobrar algo
+  distinto a lo que suman los ítems.
 
-La forma larga (`complete: false`) crea un `DRAFT` que no toca stock, para
-cotizaciones o pedidos en curso. Después:
+> Si una línea se queda sin stock, **la venta entera se revierte**. No existe el
+> estado a medias; no lo modeles en la UI.
 
 ```text
-DRAFT ──POST /sales/{id}/complete──> COMPLETED ──/cancel──> CANCELLED  (devuelve stock)
-  │                                      │
-  │                                      └──/refund──> REFUNDED        (devuelve stock)
-  └──/cancel──> CANCELLED                                              (no tocó stock)
+DRAFT ──/complete──> COMPLETED ──/cancel──> CANCELLED   (devuelve stock)
+  │                      │
+  │                      └──/refund──> REFUNDED         (devuelve stock)
+  └──/cancel──> CANCELLED                               (no tocó stock)
 ```
 
-`INVALID_SALE_TRANSITION` es la respuesta a un cambio de estado imposible;
-deshabilita los botones según `status` para no llegar ahí.
+`INVALID_SALE_TRANSITION` responde a un cambio imposible; deshabilita los
+botones según `status`.
 
-### 8.3 Compra (recepción de mercancía)
+### Compra
 
-Espejo de la venta, pero suma stock. Las líneas llevan `unit_cost` (obligatorio,
-no hay valor por defecto):
+Espejo de la venta, pero suma stock. Las líneas llevan `unit_cost`,
+obligatorio. Al completar puedes refrescar el costo de los productos:
 
 ```http
-POST /api/v1/purchases
-{"warehouse_id": "...", "supplier_id": "...", "complete": true,
- "items": [{"product_id": "...", "quantity": "10", "unit_cost": "8000"}]}
+POST /api/v1/purchases/{id}/complete?update_product_costs=true
 ```
 
-Al completar puedes refrescar el costo de los productos con lo que realmente se
-pagó: `POST /purchases/{id}/complete?update_product_costs=true`. Es **opt-in** a
-propósito — muchos negocios prefieren costo promedio ponderado, y eso es una
-decisión del negocio.
+Es *opt-in*: muchos negocios prefieren costo promedio ponderado.
 
-### 8.4 Inventario
+### Inventario
 
 ```http
 GET  /api/v1/inventory/stock?product_id=&warehouse_id=&only_non_zero=true
-GET  /api/v1/inventory/movements?product_id=&warehouse_id=&reference_id=
-POST /api/v1/inventory/adjustments   {"product_id","warehouse_id","quantity_delta":"-3","notes":"Rotura"}
-POST /api/v1/inventory/transfers     {"product_id","source_warehouse_id","destination_warehouse_id","quantity":"5"}
+GET  /api/v1/inventory/movements?product_id=&reference_id=
+POST /api/v1/inventory/adjustments  {"product_id","warehouse_id","quantity_delta":"-3","notes":"Rotura"}
+POST /api/v1/inventory/transfers    {"product_id","source_warehouse_id","destination_warehouse_id","quantity":"5"}
 ```
 
-`quantity_delta` es **con signo**: negativo descuenta, positivo suma. No es la
-cantidad final, es la diferencia.
+`quantity_delta` es **con signo**: es la diferencia, no la cantidad final.
 
-Los movimientos son el historial auditable. `reference_id` apunta a la venta o
-compra que lo originó, así que puedes enlazar desde el movimiento al documento.
+Los movimientos son el historial auditable, y `reference_id` apunta a la venta
+o compra que lo originó — puedes enlazar del kardex al documento.
 
-### 8.5 Importación masiva (4 pasos)
+### Reportes
 
-El flujo más complejo, y el que más UI necesita. Es de **dos fases a propósito**:
-nada se adivina en silencio.
+```http
+GET /api/v1/reports/sales?since=&until=&limit=10
+GET /api/v1/reports/inventory-valuation
+GET /api/v1/reports/low-stock?limit=50
+GET /api/v1/reports/audit?action=SALE_COMPLETED
+```
+
+El de ventas cuenta **solo las `COMPLETED`**: los borradores no ocurrieron y las
+canceladas o devueltas ya regresaron el dinero.
+
+### Notificaciones
+
+`GET /api/v1/notifications?only_unread=true` devuelve `unread` aparte del
+`total` — es lo que necesitas para el badge. **No hay websockets ni SSE**: haz
+polling cada 60 s o al recuperar el foco. Las alertas de stock bajo las genera
+un job diario a las 07:00.
+
+---
+
+## 11. Importación masiva desde Excel
+
+Dos fases a propósito: nada se adivina en silencio.
 
 ```text
 1. GET  /imports/schemas              campos destino de cada entidad
    GET  /imports/templates/{entity}   plantilla .xlsx (el camino fácil)
-
 2. POST /imports                      multipart: file + entity
-                                      → propone mapeo, muestra vista previa
-                                      → NO escribe nada
-
+                                      → propone mapeo y vista previa, no escribe
 3. PATCH /imports/{id}/mapping        el usuario corrige columnas
-
 4. POST /imports/{id}/validate        simulación: ejecuta y revierte
    POST /imports/{id}/run             carga de verdad
 ```
 
-**Paso 2** devuelve todo lo que necesita la pantalla de mapeo:
+El paso 2 devuelve todo lo que la pantalla de mapeo necesita:
 
 ```json
 {
-  "job": {"id": "...", "status": "ANALYZED", "...": "..."},
   "total_rows": 3,
   "columns": [
     {"source": "Referencia", "suggested_target": "sku", "confidence": 1.0,
      "reason": "exact", "needs_review": false, "samples": ["mar-01", "DES-02"]},
-    {"source": "Centro de costo", "suggested_target": null, "confidence": 0.0,
-     "reason": "unmatched", "samples": ["CC-900"]}
+    {"source": "Centro de costo", "suggested_target": null,
+     "confidence": 0.0, "reason": "unmatched", "samples": ["CC-900"]}
   ],
   "target_fields": [{"key": "sku", "label": "SKU", "type": "TEXT", "required": true,
-                     "help": "...", "example": "MAR-01", "enum_values": []}],
+                     "help": "…", "example": "MAR-01", "enum_values": []}],
   "missing_required": [],
   "preview": [{"row_number": 4, "cells": [
     {"field_key": "sale_price", "raw": "$ 15.000", "value": "15000", "error": null}]}]
@@ -493,73 +656,68 @@ nada se adivina en silencio.
 
 Cómo renderizarlo:
 
-- **Dos columnas**: a la izquierda `columns` (lo que el usuario subió, con sus
-  `samples` reales); a la derecha un `<select>` con `target_fields`.
+- **Dos columnas**: a la izquierda `columns` con sus `samples` reales; a la
+  derecha un `<select>` con `target_fields`.
 - **`needs_review: true`** → marca visual. El acierto es plausible pero no
-  seguro ("Centro de costo" se parece a un costo y no lo es).
+  seguro («Centro de costo» se parece a un costo y no lo es).
 - **`missing_required`** → no dejes avanzar; el backend responde
-  `MISSING_REQUIRED_COLUMNS` de todas formas.
-- **`preview`** es lo más valioso: muestra `raw` y `value` **lado a lado**. Ahí
-  es donde el usuario ve que su `1.500` se leyó como 1500 y no como 1,5. Si
-  `error` no es nulo, píntalo en rojo en esa celda.
+  `MISSING_REQUIRED_COLUMNS` igual.
+- **`preview` es lo más valioso**: muestra `raw` y `value` lado a lado. Ahí el
+  usuario ve que su `1.500` se leyó como 1500 y no como 1,5. Si `error` no es
+  nulo, pinta la celda en rojo.
 
-**Paso 3**: manda el mapeo completo (no un parche). Si los números o fechas se
-leen mal, fija el criterio:
+Si los números se leen mal, se fija el criterio al corregir el mapeo:
 
 ```json
-{"mapping": {"Referencia": "sku", "Artículo": "name", "PVP": "sale_price"},
- "decimal_separator": ".",      // opcional: "." o ","
- "date_format": "%d/%m/%Y",     // opcional
+{"mapping": {"Referencia": "sku", "PVP": "sale_price"},
+ "decimal_separator": ".", "date_format": "%d/%m/%Y",
  "options": {"create_missing_categories": true}}
 ```
 
-La respuesta trae la vista previa recalculada: enséñala antes de dejar continuar.
-
-**Paso 4**: `validate` ejecuta la carga real dentro de un savepoint y la
-revierte. Sus números **no son una estimación**, son lo que va a pasar:
+> **La simulación no es una estimación.** `validate` corre el cargador real
+> dentro de un savepoint y lo revierte, así que sus números incluyen las
+> restricciones de la base. Enseña el resumen y pide confirmación antes de
+> `run`.
 
 ```json
-{"dry_run": true, "stats": {"total_rows": 100, "created": 95, "updated": 3,
-                            "skipped": 2, "errors": 2},
+{"dry_run": true,
+ "stats": {"total_rows": 100, "created": 95, "updated": 3, "skipped": 2, "errors": 2},
  "errors_preview": [{"row_number": 12, "column": "PVP", "field_key": "sale_price",
                      "value": "mil pesos", "message": "'mil pesos' is not a valid number"}]}
 ```
 
-Enseña ese resumen y pide confirmación. `run` repite la operación sin revertir.
+Los errores de fila se paginan en `GET /imports/{id}/errors`. El `row_number` es
+el de **la hoja del usuario** (contando encabezado y filas en blanco) y
+`column` es el nombre de **su** columna. Una tabla con esas dos cosas basta para
+que arregle su archivo.
 
-**Errores de fila**: `GET /imports/{id}/errors?page=1&size=50`, paginados. El
-`row_number` es el de la hoja del usuario (contando encabezado y filas en
-blanco) y `column` es el nombre **de su columna**, no de nuestro campo. Una
-tabla con esas dos cosas es suficiente para que arregle su archivo.
+Detalles que afectan la UI:
 
-Notas:
+- Todas las entidades hacen **upsert**: resubir un archivo corregido es normal.
+- Orden recomendado: categorías → bodegas → productos → clientes → proveedores
+  → stock.
+- Un job terminado no se reejecuta (`IMPORT_NOT_OPEN`); sube el archivo otra vez.
+- Tope de 20.000 filas (`IMPORT_TOO_LARGE`).
+- Las importaciones son **síncronas**: pon un estado de carga que aguante, no un
+  spinner de 3 segundos.
 
-- Todas las entidades hacen **upsert**. Volver a subir un archivo corregido es
-  normal, no una limpieza.
-- Orden recomendado (el que devuelve `/imports/schemas`): categorías → bodegas →
-  productos → clientes → proveedores → stock. Un producto necesita su categoría;
-  el stock necesita producto y bodega.
-- Un job terminado no se puede reejecutar: `IMPORT_NOT_OPEN`. Sube el archivo de
-  nuevo.
-- Tope de 20.000 filas por archivo (`IMPORT_TOO_LARGE`).
-- Las importaciones son **síncronas**: una de 20.000 filas puede tardar. Pon un
-  estado de carga que aguante, no un spinner de 3 segundos.
+---
 
-### 8.6 Archivos e imágenes de producto
+## 12. Archivos e imágenes
 
 ```http
-POST /api/v1/files          multipart: file, owner_type, owner_id
-GET  /api/v1/files?owner_type=PRODUCT&owner_id=...
-GET  /api/v1/files/{id}/content
+POST   /api/v1/files          multipart: file, owner_type, owner_id
+GET    /api/v1/files?owner_type=PRODUCT&owner_id=…
+GET    /api/v1/files/{id}/content
 DELETE /api/v1/files/{id}
 ```
 
 Para la imagen de un producto: `owner_type=PRODUCT`, `owner_id=<product_id>`.
 
-> **La trampa más importante de este documento.**
+> **La trampa más importante de esta guía.**
 >
 > `GET /files/{id}/content` exige `Authorization` y `X-Company-ID`. Un
-> `<img src="/api/v1/files/.../content">` **no funciona**: el navegador no manda
+> `<img src="/api/v1/files/…/content">` **no funciona**: el navegador no manda
 > esas cabeceras. Hay que descargar el blob y crear un object URL.
 
 ```ts
@@ -570,149 +728,166 @@ async function fileObjectUrl(id: string): Promise<string> {
 // y al desmontar: URL.revokeObjectURL(url)
 ```
 
-Guarda el object URL mientras el componente viva y revócalo al desmontar, o
-tendrás una fuga de memoria en una grilla de productos.
+Revócalo al desmontar, o tendrás una fuga de memoria en una grilla de productos.
 
-Límites: **10 MB** por archivo y tipos permitidos `image/jpeg`, `image/png`,
-`image/webp`, `image/gif`, `application/pdf`, `text/csv`, `.xlsx`. Valida en el
-cliente para dar feedback inmediato, pero el backend rechaza igual
-(`FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`).
+Límites: **10 MB** y los tipos `image/jpeg`, `image/png`, `image/webp`,
+`image/gif`, `application/pdf`, `text/csv`, `.xlsx`. Valida en el cliente para
+dar feedback inmediato; el backend rechaza igual.
 
-El campo `download_url` viene ya armado en la respuesta; úsalo en vez de
-construir la ruta.
-
-### 8.7 Notificaciones
-
-```http
-GET  /api/v1/notifications?only_unread=true&page=1&size=20
-POST /api/v1/notifications/{id}/read
-```
-
-La respuesta trae `unread` aparte del `total`, que es lo que necesitas para el
-badge:
-
-```json
-{"items": [...], "total": 12, "unread": 3, "page": 1, "size": 20, "pages": 1}
-```
-
-**No hay websockets ni SSE todavía.** Haz polling cada 60 s (o al recuperar el
-foco de la ventana). Las alertas de stock bajo las genera un job diario a las
-07:00, así que no aparecen en tiempo real de todas formas.
-
-### 8.8 Reportes
-
-```http
-GET /api/v1/reports/sales?since=2026-01-01T00:00:00Z&until=...&limit=10
-GET /api/v1/reports/inventory-valuation
-GET /api/v1/reports/low-stock?limit=50
-GET /api/v1/reports/audit?page=1&size=20&action=SALE_COMPLETED
-```
-
-El de ventas cuenta **solo las `COMPLETED`**: los borradores no ocurrieron y las
-canceladas o devueltas ya regresaron el dinero. Si tu tablero muestra otro
-número, la diferencia es esa.
+El campo `download_url` viene armado en la respuesta: úsalo en vez de construir
+la ruta.
 
 ---
 
-## 9. Consola de super admin
+## 13. La consola del super admin
 
-Rutas `/api/v1/admin/*`, solo para usuarios con `is_superuser`. **No llevan
-`X-Company-ID`**: la empresa va en la ruta.
-
-Cómo saber si mostrar la consola: llama a `GET /api/v1/admin/stats`. Si responde
-`403 NOT_PLATFORM_ADMIN`, el usuario no es operador. (`/auth/me` no expone
-`is_superuser` — si te resulta incómodo, es un cambio pequeño en el backend.)
+Rutas `/api/v1/admin/*`. **No llevan `X-Company-ID`**: la empresa va en la ruta.
 
 ```http
-GET  /admin/stats                              tablero global
-GET  /admin/companies/supervision?with_metrics=true   tabla de supervisión
-GET  /admin/companies/{id}/overview            una empresa en detalle
-POST /admin/companies                          aprovisionar empresa + dueño + plan
-PATCH /admin/companies/{id}                    editar / suspender / reactivar
-GET  /admin/users, POST /admin/users, PATCH /admin/users/{id}
-GET  /admin/plans, POST /admin/plans, PATCH /admin/plans/{id}
-PUT  /admin/companies/{id}/subscription        asignar plan
-GET  /admin/audit                              auditoría de toda la plataforma
+GET   /admin/stats                                  tablero global
+GET   /admin/companies/supervision?with_metrics=    tabla de supervisión
+GET   /admin/companies?search=&status=              listado simple
+POST  /admin/companies                              aprovisionar
+GET   /admin/companies/{id}                         una empresa
+PATCH /admin/companies/{id}                         editar / suspender / reactivar
+GET   /admin/companies/{id}/overview                detalle + uso del plan
+GET   /admin/companies/{id}/members                 su equipo
+POST  /admin/companies/{id}/members                 vincular por id
+PATCH /admin/companies/{id}/members/{user_id}       cambiar rol
+GET   /admin/companies/{id}/subscription            plan actual
+PUT   /admin/companies/{id}/subscription            asignar plan
+GET   /admin/users, POST /admin/users, PATCH /admin/users/{id}
+GET   /admin/plans, POST /admin/plans, PATCH /admin/plans/{id}
+GET   /admin/onboarding/template                    libro de carga inicial
+POST  /admin/companies/{id}/onboarding              cargar una empresa entera
+GET   /admin/audit                                  auditoría de la plataforma
 ```
 
-### Supervisión
+### Tablero
 
-`GET /admin/companies/supervision?with_metrics=true` es la tabla principal: por
-empresa, plan, estado de suscripción y números reales (miembros, productos,
-bodegas, ventas y facturación de 30 días, valor del inventario, última venta).
+```json
+{"companies_total": 1, "companies_active": 1, "companies_suspended": 0,
+ "users_total": 3, "users_active": 3, "platform_admins": 1}
+```
+
+### Tabla de supervisión
+
+```json
+{"items": [{
+  "company": {"id": "9d86…", "name": "Ferretería Central", "status": "ACTIVE", "…": "…"},
+  "plan_code": "STANDARD",
+  "subscription_status": "TRIALING",
+  "metrics": {"members": 2, "active_members": 2, "products": 0, "active_products": 0,
+              "warehouses": 0, "customers": 0, "suppliers": 0, "sales_count": 0,
+              "sales_revenue": "0", "purchases_count": 0, "stock_units": "0",
+              "stock_value": "0.0000", "last_sale_at": null}
+}], "total": 1, "page": 1, "size": 20, "pages": 1}
+```
 
 `with_metrics=false` es mucho más rápido: el backend entra a cada empresa por
-turno para calcular las métricas. Con 20 filas está bien; ofrece el modo rápido
+turno para calcular sus números. Con 20 filas está bien; ofrece el modo rápido
 para búsquedas.
 
-### Aprovisionar una empresa
+### Detalle de una empresa
 
-```http
-POST /admin/companies
-{"name": "Ferretería Central", "owner_email": "ana@ferreteria.com",
- "owner_password": "clave-inicial", "plan_code": "STANDARD"}
+`GET /admin/companies/{id}/overview` añade la suscripción, el plan y el uso
+contra sus topes:
+
+```json
+{"plan": {"code": "STANDARD", "max_users": 10, "max_products": 5000, "max_warehouses": 5},
+ "usage": [{"resource": "warehouses", "used": 2, "limit": 5, "over_limit": false}],
+ "days_since_last_sale": 0,
+ "metrics": {"…": "…"}}
 ```
 
-Si `owner_email` ya tiene cuenta, esa persona pasa a ser dueña y
-`owner_password` sobra. Si no la tiene, es obligatoria
-(`OWNER_PASSWORD_REQUIRED`). La respuesta trae `owner_created` para que sepas si
-hay que entregarle credenciales.
+`limit: 0` significa **ilimitado**. Los topes hoy se muestran pero **no
+bloquean** la creación del recurso.
+
+### Suspender una empresa
+
+```http
+PATCH /admin/companies/{id}   {"status": "SUSPENDED"}
+```
+
+Sus miembros quedan fuera en la siguiente petición. El operador sigue entrando.
 
 ### Operar dentro de una empresa
 
-El operador puede usar **cualquier** endpoint normal mandando el
+El super admin puede usar **cualquier** endpoint normal mandando el
 `X-Company-ID` de la empresa destino — no necesita ser miembro. Es como se
-diagnostica un problema o se le carga data a un cliente.
+diagnostica un problema o se le carga data a un cliente. Aun así **solo ve una
+empresa por petición**.
 
-### Carga inicial de una empresa
+### Carga inicial de una empresa entera
 
-```http
-GET  /admin/onboarding/template                        libro con una hoja por entidad
-POST /admin/companies/{id}/onboarding?dry_run=true     multipart: file
+```bash
+curl localhost:8000/api/v1/admin/onboarding/template -H "Authorization: Bearer $ADMIN" -o carga.xlsx
+curl -X POST "localhost:8000/api/v1/admin/companies/$ID/onboarding?dry_run=true" \
+  -H "Authorization: Bearer $ADMIN" -F "file=@carga.xlsx"
 ```
 
-Las hojas se cargan en orden de dependencia dentro de **un solo savepoint**: o
-la empresa queda montada o no se tocó nada. La respuesta trae un resultado por
-hoja (`LOADED`, `LOADED_WITH_ERRORS`, `SKIPPED`, `EMPTY`, `MISSING_COLUMNS`) más
-los totales. Corre siempre `dry_run=true` primero y enseña el resumen.
+Un libro con una hoja por entidad, cargadas en orden de dependencia dentro de
+**un solo savepoint**: o la empresa queda montada o no se tocó nada. La
+respuesta trae un resultado por hoja (`LOADED`, `LOADED_WITH_ERRORS`, `SKIPPED`,
+`EMPTY`, `MISSING_COLUMNS`) más los totales. Corre siempre `dry_run=true`
+primero.
 
 ---
 
-## 10. Mapa de pantallas → endpoints
+## 14. Mapa de pantallas
+
+### App del negocio
+
+| Pantalla | Llamadas | Permiso |
+|---|---|---|
+| Login | `POST /auth/login` | — |
+| Selector de empresa | `GET /companies` | bearer |
+| Sin empresa | `GET /companies` → `[]` | bearer |
+| Dashboard | `/reports/sales`, `/reports/low-stock`, `/notifications` | `reports.read` |
+| Catálogo | `GET /products`, `GET /categories` | `products.read` |
+| Ficha de producto | `GET /products/{id}`, `/files?owner_type=PRODUCT`, `/inventory/stock?product_id=` | `products.read` |
+| Inventario | `GET /inventory/stock`, `GET /warehouses` | `inventory.read` |
+| Kardex | `GET /inventory/movements?product_id=` | `inventory.read` |
+| Ajuste / traslado | `POST /inventory/adjustments`, `/transfers` | `inventory.adjust` / `.transfer` |
+| Punto de venta | `GET /products`, `GET /customers`, `POST /sales` | `sales.create` |
+| Ventas | `GET /sales?status=` | `sales.read` |
+| Compras | `GET /purchases`, `POST /purchases` | `purchases.read` / `.create` |
+| Clientes / Proveedores | `/customers`, `/suppliers` | `customers.*` / `suppliers.*` |
+| **Equipo** | `GET /companies/current/members`, `GET /roles`, `POST /companies/current/members` | `members.read` / `.manage` |
+| **Roles** | `GET /roles`, `GET /roles/permissions`, `POST PATCH DELETE /roles` | `roles.read` / `.manage` |
+| Importar | `GET /imports/schemas` + el flujo de 4 pasos | `imports.run` |
+| Reportes | `/reports/*` | `reports.read` |
+| Auditoría | `GET /reports/audit` | `audit.read` |
+
+Las dos en negrita son las del administrador de empresa.
+
+### Consola de plataforma
 
 | Pantalla | Llamadas |
 |---|---|
-| Login | `POST /auth/login` |
-| Selector de empresa | `GET /companies` |
-| Dashboard | `GET /reports/sales`, `/reports/low-stock`, `/notifications?only_unread=true` |
-| Catálogo | `GET /products`, `GET /categories` |
-| Ficha de producto | `GET /products/{id}`, `GET /files?owner_type=PRODUCT&owner_id=`, `GET /inventory/stock?product_id=` |
-| Inventario | `GET /inventory/stock`, `GET /warehouses` |
-| Kardex | `GET /inventory/movements?product_id=` |
-| Ajuste / traslado | `POST /inventory/adjustments`, `/inventory/transfers` |
-| Punto de venta | `GET /products`, `GET /customers`, `POST /sales` |
-| Historial de ventas | `GET /sales?status=&customer_id=` |
-| Compras | `GET /purchases`, `POST /purchases` |
-| Clientes / Proveedores | `GET/POST/PATCH /customers`, `/suppliers` |
-| Equipo | `GET /companies/current/members`, `GET /roles`, `POST /companies/current/members` |
-| Roles | `GET /roles`, `GET /roles/permissions`, `POST/PATCH/DELETE /roles` |
-| Importar | `GET /imports/schemas`, el flujo de 4 pasos |
-| Reportes | `/reports/*` |
-| Consola de plataforma | `/admin/*` |
+| Tablero | `GET /admin/stats` |
+| Empresas | `GET /admin/companies/supervision` |
+| Crear empresa | `POST /admin/companies` |
+| Detalle de empresa | `GET /admin/companies/{id}/overview`, `/members` |
+| Equipo de una empresa | `POST PATCH /admin/companies/{id}/members` |
+| Carga inicial | `GET /admin/onboarding/template`, `POST /admin/companies/{id}/onboarding` |
+| Usuarios | `GET POST /admin/users`, `PATCH /admin/users/{id}` |
+| Planes | `GET POST /admin/plans`, `PATCH /admin/plans/{id}` |
+| Suscripciones | `PUT /admin/companies/{id}/subscription` |
+| Auditoría | `GET /admin/audit` |
 
 ---
 
-## 11. Cliente de ejemplo (TypeScript)
+## 15. Cliente de ejemplo (TypeScript)
 
-Lo mínimo que resuelve las tres cosas que se repiten: la cabecera de empresa, el
-refresco de token y la envoltura de error.
+Resuelve las tres cosas que se repiten: la cabecera de empresa, el refresco de
+token y la envoltura de error.
 
 ```ts
 import axios, { AxiosError } from "axios";
 
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL + "/api/v1" });
 
-// --- sesión (en producción, considera memoria + cookie httpOnly) ---
 const session = {
   get access() { return localStorage.getItem("access_token"); },
   get refresh() { return localStorage.getItem("refresh_token"); },
@@ -725,17 +900,16 @@ const session = {
   clear() { localStorage.clear(); },
 };
 
-// --- las dos cabeceras, una sola vez ---
+// Las dos cabeceras, una sola vez.
 api.interceptors.request.use((config) => {
   if (session.access) config.headers.Authorization = `Bearer ${session.access}`;
-  // Las rutas de auth, /companies y /admin no la quieren.
   const url = config.url ?? "";
   const skip = url.startsWith("/auth") || url === "/companies" || url.startsWith("/admin");
   if (session.companyId && !skip) config.headers["X-Company-ID"] = session.companyId;
   return config;
 });
 
-// --- refresco: una sola petición en vuelo, el resto espera ---
+// Refresco: una sola petición en vuelo, el resto espera.
 let refreshing: Promise<void> | null = null;
 
 api.interceptors.response.use(undefined, async (error: AxiosError<ApiError>) => {
@@ -759,7 +933,6 @@ api.interceptors.response.use(undefined, async (error: AxiosError<ApiError>) => 
   return Promise.reject(error);
 });
 
-// --- forma del error, para tipar los catch ---
 export interface ApiError {
   error: { code: string; message: string; details: Record<string, unknown> };
 }
@@ -770,6 +943,42 @@ export const errorCode = (e: unknown) =>
 export default api;
 ```
 
+Arranque de la sesión, con los tres niveles resueltos:
+
+```ts
+export async function bootstrap() {
+  const me = await api.get("/auth/me");
+
+  // ¿Consola de plataforma?
+  let isPlatformAdmin = false;
+  try {
+    await api.get("/admin/stats");
+    isPlatformAdmin = true;
+  } catch (e) {
+    if (errorCode(e) !== "NOT_PLATFORM_ADMIN") throw e;
+  }
+
+  const memberships = (await api.get("/companies")).data;
+  if (!memberships.length) return { me, isPlatformAdmin, state: "sin-empresa" as const };
+
+  const companyId = session.companyId ?? memberships[0].company_id;
+  session.setCompany(companyId);
+
+  const myRole = memberships.find((m: any) => m.company_id === companyId)?.role;
+  const roles = (await api.get("/roles")).data;
+
+  // Ojo: /roles devuelve primero los del sistema. Si la empresa definió uno
+  // propio con el mismo código, ese es el que manda (igual que en el backend),
+  // así que hay que preferir el que tiene company_id.
+  const matches = roles.filter((r: any) => r.code === myRole);
+  const permissions: string[] =
+    (matches.find((r: any) => r.company_id !== null) ?? matches[0])?.permissions ?? [];
+
+  return { me, isPlatformAdmin, memberships, companyId, myRole, permissions,
+           state: "listo" as const };
+}
+```
+
 Dinero, con `decimal.js`:
 
 ```ts
@@ -778,56 +987,51 @@ import Decimal from "decimal.js";
 export const money = (value: string) => new Decimal(value);
 export const formatMoney = (value: string, currency = "COP") =>
   new Intl.NumberFormat("es-CO", { style: "currency", currency })
-    .format(new Decimal(value).toNumber());   // solo para mostrar, nunca para calcular
+    .format(new Decimal(value).toNumber());   // solo para mostrar
 ```
 
 ---
 
-## 12. Entorno de desarrollo
+## 16. Entorno de desarrollo
 
 ```bash
 docker compose up --build            # api, postgres, redis, worker
-make superuser email=tu@correo.com   # primer operador de plataforma
+make superuser email=tu@correo.com   # el primer super admin
 ```
 
 API en `http://localhost:8000`, Swagger en `/docs`.
 
-### CORS
+**El primer super admin solo sale del CLI**: una base recién migrada no tiene
+ninguno, y `/api/v1/admin/*` no es alcanzable hasta que exista. A partir de ahí
+él puede crear otros desde `POST /admin/users` con `is_superuser: true`.
 
-Configurado por variable de entorno en el backend:
+Para tener una empresa con datos: crea el super admin, aprovisiona una empresa
+con `POST /admin/companies`, baja `GET /imports/templates/PRODUCTS`, llénala y
+súbela.
+
+### CORS
 
 ```env
 CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 ```
 
-Si tu dev server usa otro puerto, agrégalo ahí o las peticiones fallarán antes
-de llegar a la API. `X-Request-ID` está expuesto como cabecera de respuesta.
-
-### Datos de prueba
-
-La forma más rápida de tener una empresa con datos: registrarte con
-`company_name`, bajar `GET /imports/templates/PRODUCTS`, llenarla y subirla.
+Si tu dev server usa otro puerto, agrégalo ahí o las peticiones fallan antes de
+llegar a la API. `X-Request-ID` está expuesto como cabecera de respuesta.
 
 ---
 
-## 13. Limitaciones que afectan al frontend
+## 17. Limitaciones que afectan al frontend
 
-Cosas que el backend todavía no hace y que conviene saber **antes** de diseñar:
+Cosas que el backend todavía no hace y conviene saber **antes** de diseñar.
 
-- **Sin tiempo real.** Ni websockets ni SSE. Polling para notificaciones.
-- **El logout no revoca.** Un access token robado sirve 15 minutos más.
-- **Las imágenes requieren autenticación**, así que no se pueden usar en un
-  `<img src>` directo (ver 8.6). URLs firmadas serían la solución; no existen
-  todavía.
-- **Sin numeración consecutiva de documentos.** Las ventas y compras se
-  identifican por UUID. Si tu UI necesita mostrar "Factura #0001", eso todavía
-  no existe en el backend.
-- **Importaciones síncronas**, tope 20.000 filas.
-- **Las cuotas de plan no bloquean.** `max_users`, `max_products` y
-  `max_warehouses` se muestran en `/admin/companies/{id}/overview` pero no
-  impiden crear el recurso. Si la UI dice "llegaste al límite", hoy lo dice sola.
-- **Sin invitaciones por correo.** Para agregar un miembro, la persona ya debe
-  tener cuenta (`POST /auth/register` sin `company_name`), o el operador se la
-  crea desde `/admin/users`.
-- **`/auth/me` no dice si eres super admin.** Se descubre llamando a
-  `/admin/stats` y viendo si responde 403.
+| Limitación | Qué implica |
+|---|---|
+| Sin tiempo real | Ni websockets ni SSE. Polling para notificaciones. |
+| El logout no revoca | Un access token robado sirve 15 minutos más. |
+| Las imágenes requieren autenticación | No sirve `<img src>` directo; hay que usar blobs (§12). |
+| Sin invitaciones por correo | Quien da de alta fija la contraseña y la entrega. Nada verifica el correo. |
+| `/auth/me` no dice si eres super admin | Se descubre llamando a `/admin/stats` (§4). |
+| Sin numeración consecutiva | Ventas y compras se identifican por UUID. «Factura #0001» no existe. |
+| Importaciones síncronas | Tope de 20.000 filas; una carga grande bloquea la petición. |
+| Las cuotas de plan no bloquean | `max_users`, `max_products`, `max_warehouses` se muestran pero no impiden crear. |
+| El registro público sigue abierto | Crea cuentas sin empresa. Si no lo quieres, quitar la ruta es un cambio chico. |
