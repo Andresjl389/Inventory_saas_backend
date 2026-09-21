@@ -44,6 +44,12 @@ class UserDTO(BaseModel):
     first_name: str
     last_name: str
     is_active: bool
+    # A platform operator belongs to no company, so `GET /companies` comes back
+    # empty for them and a client that only looked at that would decide they
+    # have no access at all. This is how the client knows to send them to the
+    # platform console instead of the "you are not a member of any company"
+    # screen. It is read from the row, never from the token.
+    is_superuser: bool = False
     created_at: datetime
 
 

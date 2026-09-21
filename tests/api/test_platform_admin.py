@@ -225,3 +225,66 @@ async def test_an_operator_inside_a_company_still_sees_only_that_company(client,
     assert [item["sku"] for item in in_a.json()["items"]] == ["ACME-1"]
     assert [item["sku"] for item in in_b.json()["items"]] == ["GLOBEX-1"]
     assert in_a.json()["total"] == 1, "an operator never reads two tenants at once"
+
+
+async def test_the_client_can_tell_an_operator_apart(client, engine, unique_email):
+    """`GET /companies` is empty for an operator -- they are a member of
+    nowhere -- so without this field a client would decide they have no access
+    at all and show them the "you are not in any company" screen."""
+    admin = await platform_admin(client, engine)
+    member, _ = await tenant(client, engine, unique_email)
+
+    assert (await client.get("/api/v1/auth/me", headers=admin)).json()["is_superuser"] is True
+    assert (await client.get("/api/v1/auth/me", headers=member)).json()["is_superuser"] is False
+
+    # The operator's own membership list really is empty; the platform console
+    # is their company picker, not this endpoint.
+    assert (await client.get("/api/v1/companies", headers=admin)).json() == []
+    assert (await client.get("/api/v1/admin/companies", headers=admin)).json()["total"] >= 1
+
+
+async def test_an_operator_manages_a_company_they_do_not_belong_to(client, engine, unique_email):
+    """The whole point of the platform role: full control of any company,
+    without ever being a member of one."""
+    admin = await platform_admin(client, engine)
+    _, company_id = await tenant(client, engine, unique_email, "Ajena")
+    inside = await as_company(admin, company_id)
+
+    # Reads the company and its team.
+    current = await client.get("/api/v1/companies/current", headers=inside)
+    roster = await client.get("/api/v1/companies/current/members", headers=inside)
+    assert current.json()["name"] == "Ajena"
+    assert roster.status_code == 200
+
+    # Runs the catalogue and the warehouse.
+    product = await client.post(
+        "/api/v1/products", headers=inside, json={"name": "Martillo", "sku": "MAR-01"}
+    )
+    warehouse = await client.post("/api/v1/warehouses", headers=inside, json={"name": "Central"})
+    assert product.status_code == 201
+    assert warehouse.status_code == 201
+
+    adjusted = await client.post(
+        "/api/v1/inventory/adjustments",
+        headers=inside,
+        json={
+            "product_id": product.json()["id"],
+            "warehouse_id": warehouse.json()["id"],
+            "quantity_delta": "10",
+        },
+    )
+    assert adjusted.status_code == 200
+
+    # Defines that company's roles, and reads its reports.
+    assert (
+        await client.post(
+            "/api/v1/roles",
+            headers=inside,
+            json={"code": "CAJERO", "name": "Cajero", "permissions": ["company.read"]},
+        )
+    ).status_code == 201
+    assert (await client.get("/api/v1/reports/sales", headers=inside)).status_code == 200
+
+    # And never needed a membership to do any of it.
+    members = (await client.get("/api/v1/companies/current/members", headers=inside)).json()
+    assert "ops@example.com" not in [m["email"] for m in members]

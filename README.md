@@ -96,6 +96,12 @@ marca con `users.is_superuser` — una columna, nunca un claim del token — y e
 mismo chequeo es el que levanta `app.is_platform_admin` en la transacción, así
 que el guard de la API y las policies de RLS no pueden contradecirse.
 
+`GET /auth/me` expone `is_superuser`, que es lo que permite al cliente
+distinguirlo: un operador no es miembro de ninguna empresa, así que
+`GET /companies` le devuelve una lista vacía y un frontend que solo mirara eso
+lo mandaría a la pantalla de «no perteneces a ninguna empresa». Su selector de
+empresa es la consola (`/admin/companies/supervision`), no ese endpoint.
+
 **Es el único que puede crear empresas.** No hay autoservicio: el registro
 público crea una cuenta y nada más, `POST /api/v1/companies` no existe, y la
 policy de INSERT sobre `companies` exige el flag de plataforma — así que la
@@ -175,9 +181,12 @@ plataforma **no** abre las tablas de negocio:
 
 Para ver los datos de una empresa, el operador **entra** en ella mandando
 `X-Company-ID`. No tiene membresía, así que se le construye un `TenantContext`
-de plataforma con permisos totales — pero de **una sola empresa**. Hay un test
-que lo comprueba: el mismo admin, en dos empresas, ve un producto en cada una y
-nunca los dos juntos.
+de plataforma con permisos totales — pero de **una sola empresa**.
+
+Dentro de ella puede todo lo que puede el dueño: catálogo, inventario, ventas,
+compras, roles, equipo, reportes e importaciones. Hay un test que recorre esas
+operaciones una por una, y otro que comprueba el límite: el mismo operador, en
+dos empresas, ve un producto en cada una y nunca los dos juntos.
 
 ### Quién administra qué
 

@@ -69,9 +69,16 @@ estás construyendo (spoiler: dos).
 | Auditoría de la plataforma | ✅ | ❌ | ❌ |
 | Auditoría de su empresa | ✅ | ✅ | con `audit.read` |
 
-\* El super admin opera dentro de una empresa mandando su `X-Company-ID`, igual
-que cualquiera. **Nunca ve dos empresas a la vez**: aunque supervise todas,
-cada petición de datos de negocio está limitada a una sola.
+\* **El super admin tiene control total de cualquier empresa.** Entra mandando
+su `X-Company-ID` y usa los mismos endpoints que un miembro, con permisos
+completos: catálogo, inventario, ventas, compras, roles, equipo, reportes e
+importaciones. No necesita ser miembro y no hay nada reservado al administrador
+de empresa.
+
+La única restricción es de **alcance por petición**: nunca ve dos empresas en la
+misma respuesta. Para comparar entre empresas está
+`/admin/companies/supervision`, que las recorre una por una. Es lo que mantiene
+el aislamiento como una propiedad del sistema y no como una promesa.
 
 ### Dos aplicaciones, no una
 
@@ -143,8 +150,8 @@ POST /api/v1/auth/register
 ```
 
 ```json
-{"id": "8e30…", "email": "ana@x.com", "first_name": "Ana",
- "last_name": "Gómez", "is_active": true, "created_at": "…"}
+{"id": "8e30…", "email": "ana@x.com", "first_name": "Ana", "last_name": "Gómez",
+ "is_active": true, "is_superuser": false, "created_at": "…"}
 ```
 
 > **Cambió respecto a versiones anteriores.** El registro aceptaba
@@ -255,23 +262,22 @@ Al arrancar la sesión necesitas responder dos preguntas.
 
 ### ¿Es super admin?
 
-`/auth/me` **no** expone `is_superuser`. La forma de saberlo es preguntar:
+`GET /api/v1/auth/me` lo dice:
 
-```ts
-const isPlatformAdmin = async () => {
-  try {
-    await api.get("/admin/stats");
-    return true;
-  } catch (e) {
-    if (errorCode(e) === "NOT_PLATFORM_ADMIN") return false;
-    throw e;
-  }
-};
+```json
+{"id": "8e30…", "email": "ops@x.com", "first_name": "Ops", "last_name": "Admin",
+ "is_active": true, "is_superuser": true, "created_at": "…"}
 ```
 
-Un `403 NOT_PLATFORM_ADMIN` significa «no es operador»: no muestres la consola
-de plataforma. (Es incómodo; exponer el campo en `/auth/me` es un cambio chico
-en el backend si prefieres eso.)
+Sale de la columna de la base, nunca de un claim del token: si le quitas el rol
+a alguien, surte efecto en su siguiente petición sin esperar a que expire el
+JWT.
+
+> **Esto importa más de lo que parece.** Un operador **no es miembro de ninguna
+> empresa**, así que `GET /companies` le devuelve `[]`. Si tu guard de arranque
+> solo mira esa lista, lo mandarás a la pantalla de «no perteneces a ninguna
+> empresa» — cuando en realidad puede administrarlas todas. `is_superuser` es
+> lo que te deja ramificar antes de llegar ahí.
 
 ### ¿Qué puede hacer dentro de su empresa?
 
@@ -309,6 +315,30 @@ exactamente qué faltó:
 
 Usa `details.required_permission` para un mensaje útil («necesitas el permiso
 *Crear productos*») en vez de un «no autorizado» seco.
+
+### Cómo entra el operador a una empresa
+
+Su selector **no** es `GET /companies` (que para él está vacío), sino la consola:
+`GET /admin/companies/supervision`, que además viene paginada, con búsqueda y
+con las métricas de cada empresa. Desde esa tabla, «Entrar a esta empresa» es
+simplemente fijar el `X-Company-ID` y abrir la app del negocio.
+
+```text
+Consola  →  tabla de empresas  →  [Entrar]  →  setCompany(id)  →  app del negocio
+```
+
+A partir de ahí usa **los mismos endpoints que cualquier miembro**, con permisos
+totales dentro de esa empresa: catálogo, inventario, ventas, compras, roles,
+equipo, reportes e importaciones. Lo verificamos endpoint por endpoint; no hay
+nada que un administrador de empresa pueda hacer y el operador no.
+
+Lo único que **no** puede es ver dos empresas en la misma petición. Los
+agregados entre empresas viven en `/admin/companies/supervision`, que los
+calcula entrando a cada una por turno.
+
+Deja visible en qué empresa está parado (`GET /companies/current` te da el
+nombre) y una salida rápida a la consola; si no, es fácil creer que estás
+mirando una empresa y estar en otra.
 
 ---
 
@@ -947,19 +977,14 @@ Arranque de la sesión, con los tres niveles resueltos:
 
 ```ts
 export async function bootstrap() {
-  const me = await api.get("/auth/me");
+  const me = (await api.get("/auth/me")).data;
 
-  // ¿Consola de plataforma?
-  let isPlatformAdmin = false;
-  try {
-    await api.get("/admin/stats");
-    isPlatformAdmin = true;
-  } catch (e) {
-    if (errorCode(e) !== "NOT_PLATFORM_ADMIN") throw e;
-  }
+  // Un operador no es miembro de ninguna empresa: su lista viene vacía y su
+  // selector es la consola, no este endpoint. Ramifica antes de mirarla.
+  if (me.is_superuser) return { me, state: "plataforma" as const };
 
   const memberships = (await api.get("/companies")).data;
-  if (!memberships.length) return { me, isPlatformAdmin, state: "sin-empresa" as const };
+  if (!memberships.length) return { me, state: "sin-empresa" as const };
 
   const companyId = session.companyId ?? memberships[0].company_id;
   session.setCompany(companyId);
@@ -974,8 +999,7 @@ export async function bootstrap() {
   const permissions: string[] =
     (matches.find((r: any) => r.company_id !== null) ?? matches[0])?.permissions ?? [];
 
-  return { me, isPlatformAdmin, memberships, companyId, myRole, permissions,
-           state: "listo" as const };
+  return { me, memberships, companyId, myRole, permissions, state: "listo" as const };
 }
 ```
 
@@ -1030,7 +1054,6 @@ Cosas que el backend todavía no hace y conviene saber **antes** de diseñar.
 | El logout no revoca | Un access token robado sirve 15 minutos más. |
 | Las imágenes requieren autenticación | No sirve `<img src>` directo; hay que usar blobs (§12). |
 | Sin invitaciones por correo | Quien da de alta fija la contraseña y la entrega. Nada verifica el correo. |
-| `/auth/me` no dice si eres super admin | Se descubre llamando a `/admin/stats` (§4). |
 | Sin numeración consecutiva | Ventas y compras se identifican por UUID. «Factura #0001» no existe. |
 | Importaciones síncronas | Tope de 20.000 filas; una carga grande bloquea la petición. |
 | Las cuotas de plan no bloquean | `max_users`, `max_products`, `max_warehouses` se muestran pero no impiden crear. |
