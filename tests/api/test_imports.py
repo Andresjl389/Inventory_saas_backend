@@ -26,8 +26,8 @@ MESSY_PRODUCTS = [
 ]
 
 
-async def test_the_template_is_a_real_workbook_that_maps_to_itself(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_the_template_is_a_real_workbook_that_maps_to_itself(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
 
     response = await client.get("/api/v1/imports/templates/PRODUCTS", headers=hdrs)
 
@@ -43,8 +43,8 @@ async def test_the_template_is_a_real_workbook_that_maps_to_itself(client, uniqu
     assert all(column["suggested_target"] for column in body["columns"])
 
 
-async def test_schemas_describe_every_entity_for_a_mapping_screen(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_schemas_describe_every_entity_for_a_mapping_screen(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
 
     schemas = (await client.get("/api/v1/imports/schemas", headers=hdrs)).json()
 
@@ -63,8 +63,8 @@ async def test_schemas_describe_every_entity_for_a_mapping_screen(client, unique
     assert products["template_url"].endswith("/imports/templates/PRODUCTS")
 
 
-async def test_analysis_proposes_a_mapping_and_writes_nothing(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_analysis_proposes_a_mapping_and_writes_nothing(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
 
     response = await start_import(
         client, hdrs, entity="PRODUCTS", payload=workbook_bytes(MESSY_PRODUCTS)
@@ -95,8 +95,8 @@ async def test_analysis_proposes_a_mapping_and_writes_nothing(client, unique_ema
     assert (await client.get("/api/v1/products", headers=hdrs)).json()["total"] == 0
 
 
-async def test_a_dry_run_reports_what_would_happen_and_undoes_it(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_a_dry_run_reports_what_would_happen_and_undoes_it(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
     job = (
         await start_import(client, hdrs, entity="PRODUCTS", payload=workbook_bytes(MESSY_PRODUCTS))
     ).json()["job"]
@@ -115,8 +115,8 @@ async def test_a_dry_run_reports_what_would_happen_and_undoes_it(client, unique_
     )
 
 
-async def test_running_the_import_creates_the_records(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_running_the_import_creates_the_records(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
     job = (
         await start_import(client, hdrs, entity="PRODUCTS", payload=workbook_bytes(MESSY_PRODUCTS))
     ).json()["job"]
@@ -145,8 +145,10 @@ async def test_running_the_import_creates_the_records(client, unique_email):
     assert {item["name"] for item in categories} == {"Herramientas", "Ferretería"}
 
 
-async def test_importing_the_same_file_again_updates_instead_of_failing(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_importing_the_same_file_again_updates_instead_of_failing(
+    client, engine, unique_email
+):
+    hdrs, _ = await tenant(client, engine, unique_email)
     payload = workbook_bytes(MESSY_PRODUCTS)
     first = (await start_import(client, hdrs, entity="PRODUCTS", payload=payload)).json()["job"]
     await client.post(f"/api/v1/imports/{first['id']}/run", headers=hdrs)
@@ -159,8 +161,8 @@ async def test_importing_the_same_file_again_updates_instead_of_failing(client, 
     assert (await client.get("/api/v1/products", headers=hdrs)).json()["total"] == 3
 
 
-async def test_correcting_the_mapping_changes_what_gets_imported(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_correcting_the_mapping_changes_what_gets_imported(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
     analysis = (
         await start_import(client, hdrs, entity="PRODUCTS", payload=workbook_bytes(MESSY_PRODUCTS))
     ).json()
@@ -196,9 +198,9 @@ async def test_correcting_the_mapping_changes_what_gets_imported(client, unique_
     assert any("se repite en el archivo" in e["message"] for e in result["errors_preview"])
 
 
-async def test_pinning_the_decimal_separator_overrides_the_guess(client, unique_email):
+async def test_pinning_the_decimal_separator_overrides_the_guess(client, engine, unique_email):
     """For a file where 15.000 really does mean fifteen."""
-    hdrs, _ = await tenant(client, unique_email)
+    hdrs, _ = await tenant(client, engine, unique_email)
     analysis = (
         await start_import(
             client,
@@ -227,8 +229,10 @@ async def test_pinning_the_decimal_separator_overrides_the_guess(client, unique_
     assert cells["sale_price"] == "15.000"
 
 
-async def test_bad_rows_are_reported_by_row_number_and_the_rest_still_load(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_bad_rows_are_reported_by_row_number_and_the_rest_still_load(
+    client, engine, unique_email
+):
+    hdrs, _ = await tenant(client, engine, unique_email)
     payload = workbook_bytes(
         [
             ["Referencia", "Articulo", "PVP"],
@@ -256,8 +260,10 @@ async def test_bad_rows_are_reported_by_row_number_and_the_rest_still_load(clien
     assert [(p["sku"], p["name"]) for p in products] == [("A-1", "Repetido")]
 
 
-async def test_a_mapping_missing_a_required_field_is_refused_before_loading(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_a_mapping_missing_a_required_field_is_refused_before_loading(
+    client, engine, unique_email
+):
+    hdrs, _ = await tenant(client, engine, unique_email)
     job = (
         await start_import(
             client,
@@ -274,8 +280,8 @@ async def test_a_mapping_missing_a_required_field_is_refused_before_loading(clie
     assert result.json()["error"]["details"]["missing"] == ["sku"]
 
 
-async def test_an_unknown_target_field_is_refused(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_an_unknown_target_field_is_refused(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
     job = (
         await start_import(client, hdrs, entity="PRODUCTS", payload=workbook_bytes([["A"], ["1"]]))
     ).json()["job"]
@@ -288,8 +294,10 @@ async def test_an_unknown_target_field_is_refused(client, unique_email):
     assert response.json()["error"]["code"] == "UNKNOWN_TARGET_FIELD"
 
 
-async def test_stock_import_creates_movements_so_the_ledger_still_adds_up(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_stock_import_creates_movements_so_the_ledger_still_adds_up(
+    client, engine, unique_email
+):
+    hdrs, _ = await tenant(client, engine, unique_email)
     await create_warehouse(client, hdrs, "Bodega Central")
     products_job = (
         await start_import(
@@ -323,8 +331,8 @@ async def test_stock_import_creates_movements_so_the_ledger_still_adds_up(client
     assert "Carga inicial" in movements["items"][0]["notes"]
 
 
-async def test_stock_for_an_unknown_product_is_reported_not_invented(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_stock_for_an_unknown_product_is_reported_not_invented(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
     await create_warehouse(client, hdrs, "Bodega Central")
     job = (
         await start_import(
@@ -343,9 +351,9 @@ async def test_stock_for_an_unknown_product_is_reported_not_invented(client, uni
     assert "No existe la producto" in result["errors_preview"][0]["message"]
 
 
-async def test_imports_are_invisible_across_tenants(client):
-    hdrs_a, _ = await tenant(client, "a@example.com", "Acme")
-    hdrs_b, _ = await tenant(client, "b@example.com", "Globex")
+async def test_imports_are_invisible_across_tenants(client, engine):
+    hdrs_a, _ = await tenant(client, engine, "a@example.com", "Acme")
+    hdrs_b, _ = await tenant(client, engine, "b@example.com", "Globex")
     job = (
         await start_import(
             client, hdrs_a, entity="PRODUCTS", payload=workbook_bytes(MESSY_PRODUCTS)
@@ -359,8 +367,8 @@ async def test_imports_are_invisible_across_tenants(client):
     ).status_code == 404
 
 
-async def test_a_finished_import_cannot_be_rerun(client, unique_email):
-    hdrs, _ = await tenant(client, unique_email)
+async def test_a_finished_import_cannot_be_rerun(client, engine, unique_email):
+    hdrs, _ = await tenant(client, engine, unique_email)
     job = (
         await start_import(client, hdrs, entity="PRODUCTS", payload=workbook_bytes(MESSY_PRODUCTS))
     ).json()["job"]

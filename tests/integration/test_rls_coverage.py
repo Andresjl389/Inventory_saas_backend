@@ -138,3 +138,47 @@ async def test_sale_items_are_scoped_too(session):
     for table in ("sales", "sale_items", "purchases", "purchase_items"):
         count = (await session.execute(text(f"SELECT count(*) FROM {table}"))).scalar_one()
         assert count == 0, f"{table} leaked rows without a tenant context"
+
+
+async def test_only_a_platform_operator_can_create_a_company(session):
+    """The application rule and the database rule say the same thing.
+
+    Sign-up no longer accepts a company name, and `POST /companies` is gone --
+    but a future endpoint could reintroduce either by accident. The INSERT
+    policy is what makes that impossible rather than merely unlikely.
+    """
+    import uuid
+
+    from sqlalchemy.exc import DBAPIError
+
+    company_id = uuid.uuid4()
+    await session.execute(
+        text("SELECT set_config('app.current_company_id', :v, true)"),
+        {"v": str(company_id)},
+    )
+
+    with pytest.raises(DBAPIError) as excinfo:
+        await session.execute(
+            text("INSERT INTO companies (id, name) VALUES (:id, 'Contrabando')"),
+            {"id": company_id},
+        )
+
+    assert "row-level security" in str(excinfo.value).lower()
+
+
+async def test_a_platform_operator_can_create_a_company(session):
+    import uuid
+
+    from sqlalchemy import text as sql
+
+    company_id = uuid.uuid4()
+    await session.execute(sql("SELECT set_config('app.is_platform_admin', 'true', true)"))
+    await session.execute(
+        sql("INSERT INTO companies (id, name) VALUES (:id, 'Legítima')"),
+        {"id": company_id},
+    )
+
+    visible = (
+        await session.execute(sql("SELECT name FROM companies WHERE id = :id"), {"id": company_id})
+    ).scalar_one()
+    assert visible == "Legítima"

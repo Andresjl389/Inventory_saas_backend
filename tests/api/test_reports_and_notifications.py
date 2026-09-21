@@ -24,8 +24,8 @@ async def _sell(client, headers, warehouse_id, product_id, quantity, unit_price=
     )
 
 
-async def test_the_sales_report_counts_only_completed_sales(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_the_sales_report_counts_only_completed_sales(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     product_id = await create_product(client, headers, sale_price="10.00")
     await receive_stock(client, headers, product_id, warehouse_id, "100")
@@ -52,8 +52,8 @@ async def test_the_sales_report_counts_only_completed_sales(client, unique_email
     assert Decimal(report["top_products"][0]["quantity"]) == Decimal("3")
 
 
-async def test_inventory_valuation_prices_stock_at_cost_and_retail(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_inventory_valuation_prices_stock_at_cost_and_retail(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers, "Central")
     product_id = await create_product(client, headers, cost_price="4.00", sale_price="10.00")
     await receive_stock(client, headers, product_id, warehouse_id, "25")
@@ -68,8 +68,8 @@ async def test_inventory_valuation_prices_stock_at_cost_and_retail(client, uniqu
     assert report["warehouses"][0]["warehouse_name"] == "Central"
 
 
-async def test_low_stock_lists_products_at_or_below_their_threshold(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_low_stock_lists_products_at_or_below_their_threshold(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     scarce = await create_product(client, headers, "SCARCE", name="Scarce", min_stock="10")
     plenty = await create_product(client, headers, "PLENTY", name="Plenty", min_stock="2")
@@ -82,9 +82,11 @@ async def test_low_stock_lists_products_at_or_below_their_threshold(client, uniq
     assert Decimal(report["items"][0]["quantity"]) == Decimal("3")
 
 
-async def test_a_product_with_a_threshold_and_no_stock_row_still_shows_up(client, unique_email):
+async def test_a_product_with_a_threshold_and_no_stock_row_still_shows_up(
+    client, engine, unique_email
+):
     """ "We have none of it" is exactly what the report is for."""
-    headers, _ = await tenant(client, unique_email)
+    headers, _ = await tenant(client, engine, unique_email)
     await create_warehouse(client, headers)
     await create_product(client, headers, "NEVER", name="Never received", min_stock="5")
 
@@ -94,9 +96,9 @@ async def test_a_product_with_a_threshold_and_no_stock_row_still_shows_up(client
     assert Decimal(report["items"][0]["quantity"]) == Decimal("0")
 
 
-async def test_reports_never_mix_tenants(client):
-    headers_a, _ = await tenant(client, "a@example.com", "Acme")
-    headers_b, _ = await tenant(client, "b@example.com", "Globex")
+async def test_reports_never_mix_tenants(client, engine):
+    headers_a, _ = await tenant(client, engine, "a@example.com", "Acme")
+    headers_b, _ = await tenant(client, engine, "b@example.com", "Globex")
     warehouse_a = await create_warehouse(client, headers_a)
     product_a = await create_product(client, headers_a, sale_price="10.00")
     await receive_stock(client, headers_a, product_a, warehouse_a, "10")
@@ -113,11 +115,11 @@ async def test_reports_never_mix_tenants(client):
 
 
 async def test_the_low_stock_job_creates_one_notification_and_does_not_repeat_it(
-    client, run_job, unique_email
+    client, engine, run_job, unique_email
 ):
     from app.infrastructure.jobs.low_stock import sweep_low_stock
 
-    headers, company_id = await tenant(client, unique_email)
+    headers, company_id = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     product_id = await create_product(client, headers, "SCARCE", min_stock="10")
     await receive_stock(client, headers, product_id, warehouse_id, "2")
@@ -142,11 +144,11 @@ async def test_the_low_stock_job_creates_one_notification_and_does_not_repeat_it
     assert (await client.get("/api/v1/notifications", headers=headers)).json()["unread"] == 0
 
 
-async def test_notifications_are_tenant_scoped(client, run_job):
+async def test_notifications_are_tenant_scoped(client, engine, run_job):
     from app.infrastructure.jobs.low_stock import sweep_low_stock
 
-    headers_a, _ = await tenant(client, "a@example.com", "Acme")
-    headers_b, _ = await tenant(client, "b@example.com", "Globex")
+    headers_a, _ = await tenant(client, engine, "a@example.com", "Acme")
+    headers_b, _ = await tenant(client, engine, "b@example.com", "Globex")
     warehouse_a = await create_warehouse(client, headers_a)
     product_a = await create_product(client, headers_a, "SCARCE", min_stock="10")
     await receive_stock(client, headers_a, product_a, warehouse_a, "1")
@@ -157,8 +159,8 @@ async def test_notifications_are_tenant_scoped(client, run_job):
     assert (await client.get("/api/v1/notifications", headers=headers_b)).json()["total"] == 0
 
 
-async def test_company_actions_land_in_that_company_audit_log(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_company_actions_land_in_that_company_audit_log(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
 
     log = await client.get("/api/v1/reports/audit", headers=headers)
 

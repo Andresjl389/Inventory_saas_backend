@@ -55,7 +55,6 @@ from app.infrastructure.database.repositories.stock_repository import (
     SqlAlchemyStockMovementRepository,
     SqlAlchemyStockRepository,
 )
-from app.infrastructure.database.repositories.tenant_scope import SqlAlchemyTenantScope
 from app.infrastructure.database.repositories.user_repository import SqlAlchemyUserRepository
 from app.infrastructure.database.repositories.warehouse_repository import (
     SqlAlchemyWarehouseRepository,
@@ -84,10 +83,6 @@ def get_category_repository(session: SessionDep) -> SqlAlchemyCategoryRepository
 
 def get_product_repository(session: SessionDep) -> SqlAlchemyProductRepository:
     return SqlAlchemyProductRepository(session)
-
-
-def get_tenant_scope(session: SessionDep) -> SqlAlchemyTenantScope:
-    return SqlAlchemyTenantScope(session)
 
 
 def get_warehouse_repository(session: SessionDep) -> SqlAlchemyWarehouseRepository:
@@ -211,7 +206,6 @@ CompanyRepoDep = Annotated[SqlAlchemyCompanyRepository, Depends(get_company_repo
 MemberRepoDep = Annotated[SqlAlchemyCompanyMemberRepository, Depends(get_company_member_repository)]
 CategoryRepoDep = Annotated[SqlAlchemyCategoryRepository, Depends(get_category_repository)]
 ProductRepoDep = Annotated[SqlAlchemyProductRepository, Depends(get_product_repository)]
-TenantScopeDep = Annotated[SqlAlchemyTenantScope, Depends(get_tenant_scope)]
 WarehouseRepoDep = Annotated[SqlAlchemyWarehouseRepository, Depends(get_warehouse_repository)]
 StockRepoDep = Annotated[SqlAlchemyStockRepository, Depends(get_stock_repository)]
 MovementRepoDep = Annotated[

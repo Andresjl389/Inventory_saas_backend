@@ -8,10 +8,8 @@ from app.application.tenants.dto.company import (
     ChangeMemberRoleCommand,
     CompanyDTO,
     CompanyMemberDTO,
-    CreateCompanyCommand,
     MembershipDTO,
 )
-from app.application.tenants.use_cases.create_company import CreateCompanyUseCase
 from app.application.tenants.use_cases.list_my_companies import ListMyCompaniesUseCase
 from app.application.tenants.use_cases.manage_members import (
     AddCompanyMemberUseCase,
@@ -24,7 +22,6 @@ from app.presentation.api.dependencies.repositories import (
     CompanyRepoDep,
     MemberRepoDep,
     RoleRepoDep,
-    TenantScopeDep,
     UserRepoDep,
 )
 from app.presentation.api.dependencies.tenant import TenantDep, require_permission
@@ -40,23 +37,11 @@ async def list_my_companies(
 ) -> list[MembershipDTO]:
     """Companies the caller belongs to -- the source for the company switcher.
 
-    No X-Company-ID needed: this endpoint runs before a tenant is chosen.
+    No X-Company-ID needed: this endpoint runs before a tenant is chosen. An
+    account that belongs to nowhere gets an empty list, which is the signal to
+    show "you are not a member of any company yet".
     """
     return await ListMyCompaniesUseCase(companies, members).execute(user.id)
-
-
-@router.post("", response_model=CompanyDTO, status_code=status.HTTP_201_CREATED)
-async def create_company(
-    command: CreateCompanyCommand,
-    user: CurrentUserDep,
-    companies: CompanyRepoDep,
-    members: MemberRepoDep,
-    roles: RoleRepoDep,
-    tenant_scope: TenantScopeDep,
-) -> CompanyDTO:
-    return await CreateCompanyUseCase(companies, members, roles, tenant_scope).execute(
-        command, owner_id=user.id
-    )
 
 
 @router.get("/current", response_model=CompanyDTO)

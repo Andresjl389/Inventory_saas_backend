@@ -65,12 +65,19 @@ from app.application.platform.use_cases.supervise_companies import (
     GetCompanyOverviewUseCase,
     SuperviseCompaniesUseCase,
 )
-from app.application.tenants.dto.company import CompanyMemberDTO
-from app.application.tenants.use_cases.manage_members import ListCompanyMembersUseCase
+from app.application.tenants.dto.company import (
+    AddMemberCommand,
+    ChangeMemberRoleCommand,
+    CompanyMemberDTO,
+)
+from app.application.tenants.use_cases.manage_members import (
+    AddCompanyMemberUseCase,
+    ChangeMemberRoleUseCase,
+    ListCompanyMembersUseCase,
+)
 from app.domain.audit.entities.audit_entry import AuditAction
 from app.domain.shared.pagination import MAX_PAGE_SIZE
 from app.domain.tenants.entities.company import CompanyStatus
-from app.domain.tenants.tenant_context import TenantContext
 from app.infrastructure.database.tenant_context import set_current_company
 from app.infrastructure.imports.template import build_onboarding_workbook
 from app.presentation.api.dependencies.admin_scope import AdminCompanyScopeDep
@@ -267,15 +274,68 @@ async def onboard_company(
 
 @router.get("/companies/{company_id}/members", response_model=list[CompanyMemberDTO])
 async def list_company_members(
-    company_id: uuid.UUID,
-    admin: PlatformAdminDep,
+    scope: AdminCompanyScopeDep,
     members: MemberRepoDep,
     users: UserRepoDep,
 ) -> list[CompanyMemberDTO]:
-    # A synthetic context: the admin is not a member, and the platform policy
-    # on company_members is what makes the read possible.
-    context = TenantContext.for_platform_admin(company_id=company_id, user_id=admin.id)
-    return await ListCompanyMembersUseCase(members, users).execute(context)
+    """Who belongs to that company, and with which role."""
+    return await ListCompanyMembersUseCase(members, users).execute(scope)
+
+
+@router.post(
+    "/companies/{company_id}/members",
+    response_model=CompanyMemberDTO,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_company_member(
+    command: AddMemberCommand,
+    scope: AdminCompanyScopeDep,
+    members: MemberRepoDep,
+    users: UserRepoDep,
+    roles: RoleRepoDep,
+    audit: AuditServiceDep,
+) -> CompanyMemberDTO:
+    """Attach a person to a company, by company id.
+
+    This is how an operator gives a company its first administrator after
+    provisioning, or repairs one that lost access. If the email has no account
+    yet, send `password` and `first_name` to create it.
+    """
+    member = await AddCompanyMemberUseCase(members, users, roles).execute(command, tenant=scope)
+    await audit.record(
+        AuditAction.MEMBER_ADDED,
+        actor_user_id=scope.user_id,
+        company_id=scope.company_id,
+        entity_type="company_member",
+        entity_id=member.id,
+        payload={"email": member.email, "role": member.role},
+    )
+    return member
+
+
+@router.patch("/companies/{company_id}/members/{user_id}", response_model=CompanyMemberDTO)
+async def change_company_member_role(
+    user_id: uuid.UUID,
+    command: ChangeMemberRoleCommand,
+    scope: AdminCompanyScopeDep,
+    members: MemberRepoDep,
+    users: UserRepoDep,
+    roles: RoleRepoDep,
+    audit: AuditServiceDep,
+) -> CompanyMemberDTO:
+    """Change somebody's role in a company, or deactivate their membership."""
+    member = await ChangeMemberRoleUseCase(members, users, roles).execute(
+        user_id, command, tenant=scope
+    )
+    await audit.record(
+        AuditAction.MEMBER_ROLE_CHANGED,
+        actor_user_id=scope.user_id,
+        company_id=scope.company_id,
+        entity_type="company_member",
+        entity_id=member.id,
+        payload={"email": member.email, "role": member.role, "is_active": member.is_active},
+    )
+    return member
 
 
 # --------------------------------------------------------------------------

@@ -16,8 +16,8 @@ from tests.conftest import requires_db
 pytestmark = requires_db
 
 
-async def _company_with_activity(client, email: str, name: str) -> tuple[dict, str]:
-    hdrs, company_id = await tenant(client, email, name)
+async def _company_with_activity(client, engine, email: str, name: str) -> tuple[dict, str]:
+    hdrs, company_id = await tenant(client, engine, email, name)
     warehouse_id = await create_warehouse(client, hdrs)
     product_id = await create_product(client, hdrs, sale_price="20.00", cost_price="8.00")
     await receive_stock(client, hdrs, product_id, warehouse_id, "10")
@@ -35,8 +35,8 @@ async def _company_with_activity(client, email: str, name: str) -> tuple[dict, s
 
 async def test_the_supervision_table_shows_live_numbers_per_company(client, engine):
     admin = await platform_admin(client, engine)
-    await _company_with_activity(client, "a@example.com", "Acme")
-    await tenant(client, "b@example.com", "Quiet Co")
+    await _company_with_activity(client, engine, "a@example.com", "Acme")
+    await tenant(client, engine, "b@example.com", "Quiet Co")
 
     response = await client.get(
         "/api/v1/admin/companies/supervision", headers=admin, params={"with_metrics": "true"}
@@ -58,7 +58,7 @@ async def test_the_supervision_table_shows_live_numbers_per_company(client, engi
 
 async def test_the_fast_listing_skips_the_per_company_queries(client, engine, unique_email):
     admin = await platform_admin(client, engine)
-    await tenant(client, unique_email)
+    await tenant(client, engine, unique_email)
 
     response = await client.get(
         "/api/v1/admin/companies/supervision", headers=admin, params={"with_metrics": "false"}
@@ -69,7 +69,7 @@ async def test_the_fast_listing_skips_the_per_company_queries(client, engine, un
 
 async def test_company_overview_reports_usage_against_the_plan(client, engine):
     admin = await platform_admin(client, engine)
-    _, company_id = await _company_with_activity(client, "a@example.com", "Acme")
+    _, company_id = await _company_with_activity(client, engine, "a@example.com", "Acme")
     await client.put(
         f"/api/v1/admin/companies/{company_id}/subscription",
         headers=admin,
@@ -94,8 +94,8 @@ async def test_company_overview_reports_usage_against_the_plan(client, engine):
 
 async def test_the_overview_never_mixes_two_companies(client, engine):
     admin = await platform_admin(client, engine)
-    _, company_a = await _company_with_activity(client, "a@example.com", "Acme")
-    _, company_b = await tenant(client, "b@example.com", "Globex")
+    _, company_a = await _company_with_activity(client, engine, "a@example.com", "Acme")
+    _, company_b = await tenant(client, engine, "b@example.com", "Globex")
 
     a = (await client.get(f"/api/v1/admin/companies/{company_a}/overview", headers=admin)).json()
     b = (await client.get(f"/api/v1/admin/companies/{company_b}/overview", headers=admin)).json()
@@ -106,7 +106,7 @@ async def test_the_overview_never_mixes_two_companies(client, engine):
 
 
 async def test_a_normal_member_cannot_reach_supervision(client, engine, unique_email):
-    member, company_id = await tenant(client, unique_email)
+    member, company_id = await tenant(client, engine, unique_email)
 
     for path in (
         "/api/v1/admin/companies/supervision",
@@ -140,7 +140,7 @@ async def test_the_onboarding_template_has_a_sheet_per_entity(client, engine):
 
 async def test_an_operator_loads_a_whole_company_from_one_workbook(client, engine, unique_email):
     admin = await platform_admin(client, engine)
-    _, company_id = await tenant(client, unique_email, "Nueva Empresa")
+    _, company_id = await tenant(client, engine, unique_email, "Nueva Empresa")
 
     payload = workbook_bytes(
         [],
@@ -186,7 +186,7 @@ async def test_an_operator_loads_a_whole_company_from_one_workbook(client, engin
 async def test_onboarding_is_all_or_nothing(client, engine, unique_email):
     """A later sheet failing must not leave half a company behind."""
     admin = await platform_admin(client, engine)
-    _, company_id = await tenant(client, unique_email, "Nueva Empresa")
+    _, company_id = await tenant(client, engine, unique_email, "Nueva Empresa")
 
     dry = await client.post(
         f"/api/v1/admin/companies/{company_id}/onboarding",
@@ -217,7 +217,7 @@ async def test_a_sheet_missing_a_required_column_is_reported_not_guessed(
     client, engine, unique_email
 ):
     admin = await platform_admin(client, engine)
-    _, company_id = await tenant(client, unique_email, "Nueva Empresa")
+    _, company_id = await tenant(client, engine, unique_email, "Nueva Empresa")
 
     response = await client.post(
         f"/api/v1/admin/companies/{company_id}/onboarding",

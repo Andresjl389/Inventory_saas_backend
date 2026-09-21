@@ -11,17 +11,47 @@ from tests.conftest import requires_db
 pytestmark = requires_db
 
 
-async def test_register_creates_user_and_bootstraps_owner_company(client, unique_email):
+async def test_registering_creates_an_account_and_no_company(client, unique_email):
+    """Signing up used to accept a company name and create a tenant from it, so
+    every typo became a company. Now it creates an account, full stop."""
     body = await _register(client, unique_email)
 
-    assert body["user"]["email"] == unique_email
-    assert body["company_id"] is not None
+    assert body["email"] == unique_email
+    assert "company_id" not in body
 
     token = await _login(client, unique_email)
     companies = await client.get("/api/v1/companies", headers=_headers(token))
 
     assert companies.status_code == 200
-    assert companies.json()[0]["role"] == "OWNER"
+    assert companies.json() == [], "a new account belongs to no company"
+
+
+async def test_a_company_name_sent_at_sign_up_is_ignored(client, unique_email):
+    """Old clients still posting company_name must not create a tenant."""
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": unique_email,
+            "password": PASSWORD,
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "company_name": "No Debería Existir",
+        },
+    )
+
+    assert response.status_code == 201
+    token = await _login(client, unique_email)
+    assert (await client.get("/api/v1/companies", headers=_headers(token))).json() == []
+
+
+async def test_a_user_cannot_create_a_company(client, unique_email):
+    """Creating a company is a platform operation now; the route is gone."""
+    await _register(client, unique_email)
+    token = await _login(client, unique_email)
+
+    response = await client.post("/api/v1/companies", headers=_headers(token), json={"name": "Mía"})
+
+    assert response.status_code == 405, "POST /companies no longer exists"
 
 
 async def test_duplicate_email_is_rejected_with_a_typed_error(client, unique_email):

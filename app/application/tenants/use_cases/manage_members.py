@@ -7,8 +7,10 @@ from app.application.tenants.dto.company import (
 )
 from app.domain.authorization.exceptions import RoleNotFoundError
 from app.domain.authorization.repositories.role_repository import RoleRepository
+from app.domain.identity.entities.user import User
 from app.domain.identity.exceptions import UserNotFoundError
 from app.domain.identity.repositories.user_repository import UserRepository
+from app.domain.identity.value_objects.email import Email
 from app.domain.tenants.entities.company_member import CompanyMember
 from app.domain.tenants.exceptions import (
     MembershipAlreadyExistsError,
@@ -16,7 +18,8 @@ from app.domain.tenants.exceptions import (
 )
 from app.domain.tenants.repositories.company_member_repository import CompanyMemberRepository
 from app.domain.tenants.tenant_context import TenantContext
-from app.shared.exceptions import BusinessRuleError
+from app.shared.exceptions import BusinessRuleError, ValidationError
+from app.shared.security import hash_password
 
 
 async def _resolve_role(roles: RoleRepository, code: str, company_id: uuid.UUID):
@@ -55,10 +58,15 @@ class ListCompanyMembersUseCase:
 
 
 class AddCompanyMemberUseCase:
-    """Attach an existing user to the current company.
+    """Attach a person to a company that already exists.
 
-    Inviting someone who has no account yet needs an invitation flow (email +
-    token); a platform admin can create the account from /admin/users instead.
+    The company is always identified by id (it comes from the tenant context,
+    or from the path on the platform-admin route) -- never created here, and
+    never conjured from a name.
+
+    There is no email invitation yet, so onboarding somebody new means the
+    administrator sets their first password and hands it over. Worth knowing:
+    nothing verifies the address belongs to that person.
     """
 
     def __init__(
@@ -74,9 +82,11 @@ class AddCompanyMemberUseCase:
     async def execute(
         self, command: AddMemberCommand, *, tenant: TenantContext
     ) -> CompanyMemberDTO:
-        user = await self._users.get_by_email(str(command.email))
+        email = Email(command.email).value
+        user = await self._users.get_by_email(email)
+
         if user is None:
-            raise UserNotFoundError("No account exists for that email address")
+            user = await self._create_account(command, email)
 
         if await self._members.get(tenant.company_id, user.id) is not None:
             raise MembershipAlreadyExistsError()
@@ -99,6 +109,28 @@ class AddCompanyMemberUseCase:
             role=role.code,
             role_id=role.id,
             is_active=membership.is_active,
+        )
+
+    async def _create_account(self, command: AddMemberCommand, email: str):
+        if not command.password:
+            raise UserNotFoundError(
+                "No account exists for that email address. Send a password "
+                "(and optionally a name) to create it.",
+                code="ACCOUNT_DETAILS_REQUIRED",
+            )
+        if not command.first_name:
+            raise ValidationError(
+                "first_name is required when creating the account",
+                code="ACCOUNT_DETAILS_REQUIRED",
+            )
+
+        return await self._users.add(
+            User(
+                email=email,
+                password_hash=hash_password(command.password),
+                first_name=command.first_name.strip(),
+                last_name=(command.last_name or "").strip(),
+            )
         )
 
 

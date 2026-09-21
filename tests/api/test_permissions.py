@@ -18,7 +18,7 @@ pytestmark = requires_db
 
 
 async def _member_with_role(client, owner_headers, company_id, email, role) -> dict[str, str]:
-    await register(client, email, company=None)
+    await register(client, email)
     invited = await client.post(
         "/api/v1/companies/current/members",
         headers=owner_headers,
@@ -28,8 +28,8 @@ async def _member_with_role(client, owner_headers, company_id, email, role) -> d
     return headers(await login(client, email), company_id)
 
 
-async def test_a_seller_can_sell_but_not_adjust_inventory(client):
-    owner_headers, company_id = await tenant(client, "owner@example.com")
+async def test_a_seller_can_sell_but_not_adjust_inventory(client, engine):
+    owner_headers, company_id = await tenant(client, engine, "owner@example.com")
     warehouse_id = await create_warehouse(client, owner_headers)
     product_id = await create_product(client, owner_headers)
 
@@ -51,8 +51,8 @@ async def test_a_seller_can_sell_but_not_adjust_inventory(client):
     assert body["details"]["required_permission"] == "inventory.adjust"
 
 
-async def test_a_seller_cannot_create_products_or_manage_members(client):
-    owner_headers, company_id = await tenant(client, "owner@example.com")
+async def test_a_seller_cannot_create_products_or_manage_members(client, engine):
+    owner_headers, company_id = await tenant(client, engine, "owner@example.com")
     seller = await _member_with_role(
         client, owner_headers, company_id, "seller@example.com", "SELLER"
     )
@@ -66,8 +66,8 @@ async def test_a_seller_cannot_create_products_or_manage_members(client):
     assert members.status_code == 403
 
 
-async def test_an_inventory_manager_can_adjust_but_not_sell(client):
-    owner_headers, company_id = await tenant(client, "owner@example.com")
+async def test_an_inventory_manager_can_adjust_but_not_sell(client, engine):
+    owner_headers, company_id = await tenant(client, engine, "owner@example.com")
     warehouse_id = await create_warehouse(client, owner_headers)
     product_id = await create_product(client, owner_headers)
 
@@ -94,9 +94,9 @@ async def test_an_inventory_manager_can_adjust_but_not_sell(client):
     assert sold.json()["error"]["details"]["required_permission"] == "sales.create"
 
 
-async def test_a_member_of_one_company_cannot_use_another(client):
-    owner_headers, company_id = await tenant(client, "owner@example.com", "Acme")
-    _, other_company_id = await tenant(client, "other@example.com", "Globex")
+async def test_a_member_of_one_company_cannot_use_another(client, engine):
+    owner_headers, company_id = await tenant(client, engine, "owner@example.com", "Acme")
+    _, other_company_id = await tenant(client, engine, "other@example.com", "Globex")
 
     seller = await _member_with_role(
         client, owner_headers, company_id, "seller@example.com", "SELLER"

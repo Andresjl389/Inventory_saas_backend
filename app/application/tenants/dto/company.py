@@ -6,20 +6,23 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from app.domain.tenants.entities.company import CompanyStatus, DocumentType
 
 
-class CreateCompanyCommand(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    legal_name: str | None = Field(default=None, max_length=200)
-    document_type: DocumentType | None = None
-    document_number: str | None = Field(default=None, max_length=50)
-    email: EmailStr | None = None
-    phone: str | None = Field(default=None, max_length=50)
-
-
 class AddMemberCommand(BaseModel):
+    """Attach a person to this company.
+
+    If the email already has an account, that account is attached. If it does
+    not, and a password is supplied, the account is created and attached in one
+    step -- which is what lets a company administrator onboard their own team
+    without a platform operator in the loop.
+    """
+
     email: EmailStr
     # A role *code*: one of the system roles (OWNER, ADMIN, SELLER,
     # INVENTORY_MANAGER) or a custom one this company defined.
     role: str = Field(min_length=1, max_length=64)
+    # Only used when the email has no account yet.
+    password: str | None = Field(default=None, min_length=8, max_length=72)
+    first_name: str | None = Field(default=None, min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class ChangeMemberRoleCommand(BaseModel):

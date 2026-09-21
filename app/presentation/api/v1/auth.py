@@ -1,7 +1,4 @@
-import uuid
-
 from fastapi import APIRouter, status
-from pydantic import BaseModel
 
 from app.application.identity.dto.auth import (
     LoginCommand,
@@ -14,34 +11,20 @@ from app.application.identity.use_cases.authenticate_user import AuthenticateUse
 from app.application.identity.use_cases.refresh_tokens import RefreshTokensUseCase
 from app.application.identity.use_cases.register_user import RegisterUserUseCase
 from app.presentation.api.dependencies.auth import CurrentUserDep
-from app.presentation.api.dependencies.repositories import (
-    CompanyRepoDep,
-    MemberRepoDep,
-    RoleRepoDep,
-    TenantScopeDep,
-    UserRepoDep,
-)
+from app.presentation.api.dependencies.repositories import UserRepoDep
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-class RegisterResponse(BaseModel):
-    user: UserDTO
-    company_id: uuid.UUID | None = None
+@router.post("/register", response_model=UserDTO, status_code=status.HTTP_201_CREATED)
+async def register(command: RegisterUserCommand, users: UserRepoDep) -> UserDTO:
+    """Create an account. It belongs to no company yet.
 
-
-@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
-async def register(
-    command: RegisterUserCommand,
-    users: UserRepoDep,
-    companies: CompanyRepoDep,
-    members: MemberRepoDep,
-    roles: RoleRepoDep,
-    tenant_scope: TenantScopeDep,
-) -> RegisterResponse:
-    use_case = RegisterUserUseCase(users, companies, members, roles, tenant_scope)
-    user, company_id = await use_case.execute(command)
-    return RegisterResponse(user=user, company_id=company_id)
+    Companies are created by a platform administrator, who names the owner at
+    the same time. To join an existing one, that company's administrator adds
+    you from their team screen.
+    """
+    return await RegisterUserUseCase(users).execute(command)
 
 
 @router.post("/login", response_model=TokenPairDTO)

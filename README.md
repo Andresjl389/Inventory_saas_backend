@@ -4,7 +4,7 @@ Backend multi-tenant construido sobre la arquitectura descrita en `BACKEND.md`:
 FastAPI + PostgreSQL con Row Level Security, arquitectura hexagonal y aislamiento
 de tenants en tres capas.
 
-> Estado: **Fases 1 a 5 implementadas**. 70 endpoints, 24 tablas, 225 tests.
+> Estado: **Fases 1 a 5 implementadas**. 71 endpoints, 24 tablas, 236 tests.
 > Identity, empresas, miembros, tenant context, RLS, categorías, productos,
 > bodegas, inventario con ledger, clientes, proveedores, ventas, compras,
 > **super admin de plataforma**, roles y permisos en base de datos, auditoría,
@@ -96,6 +96,12 @@ marca con `users.is_superuser` — una columna, nunca un claim del token — y e
 mismo chequeo es el que levanta `app.is_platform_admin` en la transacción, así
 que el guard de la API y las policies de RLS no pueden contradecirse.
 
+**Es el único que puede crear empresas.** No hay autoservicio: el registro
+público crea una cuenta y nada más, `POST /api/v1/companies` no existe, y la
+policy de INSERT sobre `companies` exige el flag de plataforma — así que la
+regla de la aplicación y la de la base dicen lo mismo y un endpoint futuro no
+puede reabrir la puerta por descuido.
+
 ```bash
 # Crear empresa + dueño + suscripción, todo en una transacción
 curl -X POST localhost:8000/api/v1/admin/companies -H "Authorization: Bearer $ADMIN" \
@@ -120,6 +126,8 @@ aprovisionar: si algo falla, se revierte entera.
 | `GET /admin/companies` | Todas las empresas, con búsqueda y filtro por estado |
 | `PATCH /admin/companies/{id}` | Editar, **suspender** o reactivar |
 | `GET /admin/companies/{id}/members` | Quién pertenece a esa empresa |
+| `POST /admin/companies/{id}/members` | **Vincular una persona a una empresa por id** |
+| `PATCH /admin/companies/{id}/members/{user_id}` | Cambiar su rol o desactivarla |
 | `GET/POST /admin/users`, `PATCH /admin/users/{id}` | Crear cuentas, resetear claves, desactivar, otorgar rol de plataforma |
 | `GET/POST /admin/plans`, `PATCH /admin/plans/{id}` | Catálogo de planes |
 | `PUT /admin/companies/{id}/subscription` | Poner una empresa en un plan |
@@ -170,6 +178,37 @@ Para ver los datos de una empresa, el operador **entra** en ella mandando
 de plataforma con permisos totales — pero de **una sola empresa**. Hay un test
 que lo comprueba: el mismo admin, en dos empresas, ve un producto en cada una y
 nunca los dos juntos.
+
+### Quién administra qué
+
+```text
+Super admin  ──crea──>  Empresa + su OWNER
+                             │
+                             └──gestiona──>  roles, permisos, miembros,
+                                             y todo el negocio de su empresa
+```
+
+Cada empresa sale del aprovisionamiento con **una persona responsable**: el
+`OWNER`, que tiene el comodín `*`. Desde ahí arma su propio equipo, incluidos
+otros `ADMIN`. El operador de plataforma no participa en el día a día de una
+empresa; solo entra cuando hay que repararla.
+
+Para dar de alta a alguien hay dos caminos, y los dos apuntan a una empresa que
+**ya existe**, identificada por su id:
+
+```bash
+# La dueña agrega a su equipo (crea la cuenta si no existe)
+curl -X POST localhost:8000/api/v1/companies/current/members "${AUTH[@]}" -d '{
+  "email":"vendedor@acme.com", "role":"SELLER",
+  "password":"clave-inicial", "first_name":"Luis"}'
+
+# El operador vincula a alguien a cualquier empresa (ruta de reparación)
+curl -X POST localhost:8000/api/v1/admin/companies/$ID/members \
+  -H "Authorization: Bearer $ADMIN" -d '{"email":"rescate@acme.com","role":"ADMIN"}'
+```
+
+Todavía no hay invitaciones por correo: quien da de alta fija la primera
+contraseña y la entrega. Nada verifica que la dirección sea de esa persona.
 
 ---
 
@@ -231,12 +270,15 @@ se toma del cuerpo de la petición.
 
 ### Ejemplo end-to-end
 
+> El registro público (`POST /api/v1/auth/register`) crea **solo una cuenta**,
+> sin empresa. Quien la administra te agrega después.
+
 ```bash
-# 1. Registro (crea usuario + empresa + membership OWNER)
-curl -X POST localhost:8000/api/v1/auth/register -H 'Content-Type: application/json' -d '{
-  "email":"ada@example.com","password":"sup3r-secret-pw",
-  "first_name":"Ada","last_name":"Lovelace","company_name":"Acme"
-}'
+# 1. El operador crea la empresa y nombra a su dueña
+curl -X POST localhost:8000/api/v1/admin/companies -H "Authorization: Bearer $ADMIN" \
+  -H 'Content-Type: application/json' -d '{
+    "name":"Acme", "owner_email":"ada@example.com", "owner_password":"sup3r-secret-pw"
+  }'
 
 # 2. Login
 curl -X POST localhost:8000/api/v1/auth/login -H 'Content-Type: application/json' \
@@ -392,10 +434,10 @@ tenant no ve absolutamente nada**.
 - `company_members`: cada usuario ve sus propias membresías; dentro de un tenant
   ve el roster completo.
 
-Crear una empresa es el único caso donde un caso de uso cambia el scope: genera
-el UUID, entra en el scope del nuevo tenant (`TenantScope.enter`) y recién
-entonces inserta la empresa y la membresía del OWNER. Así las policies de
-INSERT no necesitan excepciones.
+Crear una empresa ya no es una operación de tenant: la hace el operador con el
+flag de plataforma levantado, así que la policy de INSERT sobre `companies` es
+simplemente `app.is_platform_admin()`. El puerto `TenantScope`, que existía
+solo para el viejo bootstrap desde el formulario de registro, se eliminó con él.
 
 ### El olvido que importa
 
@@ -837,6 +879,10 @@ que las traduce a HTTP.
   request y a cambio un cambio de rol surte efecto sin volver a iniciar sesión.
   Si el join pesa, el siguiente paso es cachearlo en Redis con invalidación al
   editar el rol — no volver al enum.
+- **Registrarse crea una cuenta, no una empresa.** Antes el formulario aceptaba
+  un nombre de empresa y creaba el tenant a partir de él, así que cada error de
+  digitación era una empresa nueva y nadie podía saber cuál era la de verdad.
+  Ahora las crea el operador, que nombra al dueño en la misma llamada.
 - **El super admin no es miembro de ninguna empresa.** Podría haberse modelado
   como una membresía especial, pero entonces todo el código de tenants tendría
   que preguntarse "¿y si este miembro es de plataforma?". Separarlos deja los

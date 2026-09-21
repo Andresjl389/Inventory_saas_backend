@@ -13,12 +13,18 @@ from app.shared.config.settings import settings
 
 
 class RegisterUserCommand(BaseModel):
+    """Signing up creates an *account*, nothing else.
+
+    Companies are created by a platform administrator, who names the owner at
+    the same time. Letting a sign-up form conjure a company from a typed name
+    meant every typo became a new tenant and nobody could tell which of them
+    was real.
+    """
+
     email: EmailStr
     password: str = Field(min_length=8, max_length=72)
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
-    # Optional: create a company and make the new user its OWNER in one call.
-    company_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class LoginCommand(BaseModel):

@@ -14,7 +14,7 @@ pytestmark = requires_db
 
 
 async def test_a_normal_user_cannot_reach_the_admin_api(client, engine, unique_email):
-    member, _ = await tenant(client, unique_email)
+    member, _ = await tenant(client, engine, unique_email)
 
     for path in ("/api/v1/admin/companies", "/api/v1/admin/users", "/api/v1/admin/stats"):
         response = await client.get(path, headers=member)
@@ -60,7 +60,7 @@ async def test_provisioning_creates_the_company_its_owner_and_a_subscription(cli
 
 async def test_provisioning_reuses_an_existing_account_as_owner(client, engine, unique_email):
     admin = await platform_admin(client, engine)
-    await register(client, unique_email, company=None)
+    await register(client, unique_email)
 
     response = await client.post(
         "/api/v1/admin/companies",
@@ -87,7 +87,7 @@ async def test_a_new_owner_without_a_password_is_refused(client, engine):
 
 async def test_suspending_a_company_locks_its_members_out(client, engine, unique_email):
     admin = await platform_admin(client, engine)
-    member, company_id = await tenant(client, unique_email)
+    member, company_id = await tenant(client, engine, unique_email)
     assert (await client.get("/api/v1/products", headers=member)).status_code == 200
 
     suspended = await client.patch(
@@ -107,8 +107,8 @@ async def test_suspending_a_company_locks_its_members_out(client, engine, unique
 
 async def test_the_admin_sees_every_company_and_a_member_sees_only_theirs(client, engine):
     admin = await platform_admin(client, engine)
-    member_a, company_a = await tenant(client, "a@example.com", "Acme")
-    await tenant(client, "b@example.com", "Globex")
+    member_a, company_a = await tenant(client, engine, "a@example.com", "Acme")
+    await tenant(client, engine, "b@example.com", "Globex")
 
     listed = await client.get("/api/v1/admin/companies", headers=admin)
     names = {item["name"] for item in listed.json()["items"]}
@@ -161,7 +161,7 @@ async def test_an_admin_cannot_lock_themselves_out(client, engine):
 
 async def test_plans_and_subscriptions(client, engine, unique_email):
     admin = await platform_admin(client, engine)
-    _, company_id = await tenant(client, unique_email)
+    _, company_id = await tenant(client, engine, unique_email)
 
     plans = await client.get("/api/v1/admin/plans", headers=admin)
     assert {plan["code"] for plan in plans.json()} >= {"FREE", "STANDARD", "ENTERPRISE"}
@@ -203,7 +203,7 @@ async def test_platform_actions_land_in_the_audit_log(client, engine):
 
 async def test_platform_stats(client, engine, unique_email):
     admin = await platform_admin(client, engine)
-    await tenant(client, unique_email)
+    await tenant(client, engine, unique_email)
 
     stats = (await client.get("/api/v1/admin/stats", headers=admin)).json()
 
@@ -214,8 +214,8 @@ async def test_platform_stats(client, engine, unique_email):
 async def test_an_operator_inside_a_company_still_sees_only_that_company(client, engine):
     """The escape hatch widens the platform tables, never the business ones."""
     admin = await platform_admin(client, engine)
-    headers_a, company_a = await tenant(client, "a@example.com", "Acme")
-    headers_b, company_b = await tenant(client, "b@example.com", "Globex")
+    headers_a, company_a = await tenant(client, engine, "a@example.com", "Acme")
+    headers_b, company_b = await tenant(client, engine, "b@example.com", "Globex")
     await create_product(client, headers_a, "ACME-1")
     await create_product(client, headers_b, "GLOBEX-1")
 

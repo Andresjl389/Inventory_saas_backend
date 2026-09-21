@@ -6,8 +6,8 @@ from tests.conftest import requires_db
 pytestmark = requires_db
 
 
-async def test_create_and_list_products(client, unique_email):
-    headers, _ = await _tenant(client, unique_email, "Acme")
+async def test_create_and_list_products(client, engine, unique_email):
+    headers, _ = await _tenant(client, engine, unique_email, "Acme")
 
     category = await client.post("/api/v1/categories", headers=headers, json={"name": "Tools"})
     assert category.status_code == 201
@@ -31,8 +31,8 @@ async def test_create_and_list_products(client, unique_email):
     assert listing.json()["total"] == 1
 
 
-async def test_duplicate_sku_within_a_company_is_rejected(client, unique_email):
-    headers, _ = await _tenant(client, unique_email, "Acme")
+async def test_duplicate_sku_within_a_company_is_rejected(client, engine, unique_email):
+    headers, _ = await _tenant(client, engine, unique_email, "Acme")
     payload = {"name": "Hammer", "sku": "HMR-01"}
 
     assert (await client.post("/api/v1/products", headers=headers, json=payload)).status_code == 201
@@ -42,9 +42,9 @@ async def test_duplicate_sku_within_a_company_is_rejected(client, unique_email):
     assert duplicate.json()["error"]["code"] == "DUPLICATE_SKU"
 
 
-async def test_the_same_sku_is_fine_in_a_different_company(client):
-    headers_a, _ = await _tenant(client, "a@example.com", "Acme")
-    headers_b, _ = await _tenant(client, "b@example.com", "Globex")
+async def test_the_same_sku_is_fine_in_a_different_company(client, engine):
+    headers_a, _ = await _tenant(client, engine, "a@example.com", "Acme")
+    headers_b, _ = await _tenant(client, engine, "b@example.com", "Globex")
     payload = {"name": "Hammer", "sku": "HMR-01"}
 
     first = await client.post("/api/v1/products", headers=headers_a, json=payload)
@@ -54,9 +54,9 @@ async def test_the_same_sku_is_fine_in_a_different_company(client):
     assert second.status_code == 201
 
 
-async def test_a_product_is_invisible_to_another_tenant(client):
-    headers_a, _ = await _tenant(client, "a@example.com", "Acme")
-    headers_b, _ = await _tenant(client, "b@example.com", "Globex")
+async def test_a_product_is_invisible_to_another_tenant(client, engine):
+    headers_a, _ = await _tenant(client, engine, "a@example.com", "Acme")
+    headers_b, _ = await _tenant(client, engine, "b@example.com", "Globex")
 
     created = await client.post(
         "/api/v1/products",
@@ -76,8 +76,8 @@ async def test_a_product_is_invisible_to_another_tenant(client):
     assert listing.json()["total"] == 0
 
 
-async def test_deactivating_a_product_keeps_the_row(client, unique_email):
-    headers, _ = await _tenant(client, unique_email, "Acme")
+async def test_deactivating_a_product_keeps_the_row(client, engine, unique_email):
+    headers, _ = await _tenant(client, engine, unique_email, "Acme")
     created = await client.post(
         "/api/v1/products", headers=headers, json={"name": "Hammer", "sku": "HMR-01"}
     )

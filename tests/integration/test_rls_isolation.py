@@ -22,6 +22,13 @@ async def _set_company(session, company_id: uuid.UUID | None) -> None:
     )
 
 
+async def _set_platform_admin(session, enabled: bool) -> None:
+    await session.execute(
+        text("SELECT set_config('app.is_platform_admin', :v, true)"),
+        {"v": "true" if enabled else ""},
+    )
+
+
 async def _set_user(session, user_id: uuid.UUID | None) -> None:
     await session.execute(
         text("SELECT set_config('app.current_user_id', :v, true)"),
@@ -41,15 +48,18 @@ async def _seed_tenant(session, label: str) -> tuple[uuid.UUID, uuid.UUID, uuid.
         {"id": user_id, "email": f"{label}-{user_id.hex[:8]}@example.com", "first": label},
     )
 
-    # Creating a tenant means entering its scope first: the INSERT policies on
-    # companies and company_members only accept the active company.
+    # Only a platform operator may create a company, so the seeder raises the
+    # flag for that one statement and drops it again -- the same thing the
+    # provisioning endpoint does.
     await _set_user(session, user_id)
-    await _set_company(session, company_id)
-
+    await _set_platform_admin(session, True)
     await session.execute(
         text("INSERT INTO companies (id, name) VALUES (:id, :name)"),
         {"id": company_id, "name": f"Company {label}"},
     )
+    await _set_platform_admin(session, False)
+
+    await _set_company(session, company_id)
     await session.execute(
         text(
             "INSERT INTO company_members (company_id, user_id, role_id) "

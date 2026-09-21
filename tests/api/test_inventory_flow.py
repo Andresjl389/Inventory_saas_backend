@@ -16,8 +16,8 @@ from tests.conftest import requires_db
 pytestmark = requires_db
 
 
-async def test_warehouse_names_are_unique_per_company(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_warehouse_names_are_unique_per_company(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     await create_warehouse(client, headers, "Main")
 
     duplicate = await client.post("/api/v1/warehouses", headers=headers, json={"name": "Main"})
@@ -26,16 +26,16 @@ async def test_warehouse_names_are_unique_per_company(client, unique_email):
     assert duplicate.json()["error"]["code"] == "DUPLICATE_WAREHOUSE_NAME"
 
 
-async def test_the_same_warehouse_name_is_fine_in_another_company(client):
-    headers_a, _ = await tenant(client, "a@example.com", "Acme")
-    headers_b, _ = await tenant(client, "b@example.com", "Globex")
+async def test_the_same_warehouse_name_is_fine_in_another_company(client, engine):
+    headers_a, _ = await tenant(client, engine, "a@example.com", "Acme")
+    headers_b, _ = await tenant(client, engine, "b@example.com", "Globex")
 
     await create_warehouse(client, headers_a, "Main")
     await create_warehouse(client, headers_b, "Main")
 
 
-async def test_adjustment_moves_stock_and_leaves_a_trail(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_adjustment_moves_stock_and_leaves_a_trail(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     product_id = await create_product(client, headers)
 
@@ -62,8 +62,8 @@ async def test_adjustment_moves_stock_and_leaves_a_trail(client, unique_email):
     assert body["items"][0]["notes"] == "Opening balance"
 
 
-async def test_stock_cannot_be_driven_negative(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_stock_cannot_be_driven_negative(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     product_id = await create_product(client, headers)
 
@@ -78,8 +78,8 @@ async def test_stock_cannot_be_driven_negative(client, unique_email):
     assert await stock_of(client, headers, product_id, warehouse_id) == Decimal("0")
 
 
-async def test_transfer_moves_stock_between_warehouses(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_transfer_moves_stock_between_warehouses(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     source = await create_warehouse(client, headers, "Main")
     destination = await create_warehouse(client, headers, "Branch")
     product_id = await create_product(client, headers)
@@ -101,8 +101,10 @@ async def test_transfer_moves_stock_between_warehouses(client, unique_email):
     assert await stock_of(client, headers, product_id, destination) == Decimal("4")
 
 
-async def test_a_transfer_that_would_overdraw_the_source_changes_nothing(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_a_transfer_that_would_overdraw_the_source_changes_nothing(
+    client, engine, unique_email
+):
+    headers, _ = await tenant(client, engine, unique_email)
     source = await create_warehouse(client, headers, "Main")
     destination = await create_warehouse(client, headers, "Branch")
     product_id = await create_product(client, headers)
@@ -126,8 +128,8 @@ async def test_a_transfer_that_would_overdraw_the_source_changes_nothing(client,
     assert await stock_of(client, headers, product_id, destination) == Decimal("0")
 
 
-async def test_a_transfer_to_the_same_warehouse_is_rejected(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_a_transfer_to_the_same_warehouse_is_rejected(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     product_id = await create_product(client, headers)
 
@@ -146,8 +148,8 @@ async def test_a_transfer_to_the_same_warehouse_is_rejected(client, unique_email
     assert response.json()["error"]["code"] == "SAME_WAREHOUSE_TRANSFER"
 
 
-async def test_an_inactive_warehouse_refuses_stock(client, unique_email):
-    headers, _ = await tenant(client, unique_email)
+async def test_an_inactive_warehouse_refuses_stock(client, engine, unique_email):
+    headers, _ = await tenant(client, engine, unique_email)
     warehouse_id = await create_warehouse(client, headers)
     product_id = await create_product(client, headers)
     await client.delete(f"/api/v1/warehouses/{warehouse_id}", headers=headers)
@@ -164,7 +166,7 @@ async def test_an_inactive_warehouse_refuses_stock(client, unique_email):
 
 async def test_cached_stock_always_equals_the_sum_of_its_movements(client, engine, unique_email):
     """The invariant that makes the ledger trustworthy."""
-    headers, company_id = await tenant(client, unique_email)
+    headers, company_id = await tenant(client, engine, unique_email)
     source = await create_warehouse(client, headers, "Main")
     destination = await create_warehouse(client, headers, "Branch")
     product_id = await create_product(client, headers)
