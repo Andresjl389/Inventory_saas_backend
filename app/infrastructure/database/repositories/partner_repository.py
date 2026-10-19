@@ -33,6 +33,13 @@ _WRITABLE_FIELDS = (
 class _PartyRepository:
     model: Any
     to_domain: Any
+    # Columnas propias de uno de los dos: el cupo de fiado solo existe en
+    # clientes.
+    extra_fields: tuple[str, ...] = ()
+
+    @property
+    def _fields(self) -> tuple[str, ...]:
+        return _WRITABLE_FIELDS + self.extra_fields
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -96,7 +103,7 @@ class _PartyRepository:
         model = self.model(
             id=entity.id,
             company_id=entity.company_id,
-            **{field: getattr(entity, field) for field in _WRITABLE_FIELDS},
+            **{field: getattr(entity, field) for field in self._fields},
         )
         self._session.add(model)
         await self._session.flush()
@@ -110,7 +117,7 @@ class _PartyRepository:
         model = (await self._session.execute(stmt)).scalar_one_or_none()
         if model is None:
             raise LookupError(f"{self.model.__name__} {entity.id} disappeared before update")
-        for field in _WRITABLE_FIELDS:
+        for field in self._fields:
             setattr(model, field, getattr(entity, field))
         await self._session.flush()
         return self.to_domain(model)
@@ -119,6 +126,7 @@ class _PartyRepository:
 class SqlAlchemyCustomerRepository(_PartyRepository):
     model = CustomerModel
     to_domain = staticmethod(customer_to_domain)
+    extra_fields = ("credit_limit",)
 
     async def get_by_id(self, company_id: uuid.UUID, customer_id: uuid.UUID) -> Customer | None:
         return await super().get_by_id(company_id, customer_id)

@@ -5,6 +5,7 @@ from sqlalchemy import ForeignKey, Index, Text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.domain.credit.entities.account import PaymentMethod
 from app.domain.sales.entities.sale import SaleStatus
 from app.infrastructure.database.base import (
     MONEY,
@@ -42,6 +43,15 @@ class SaleModel(UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin, Base):
         MONEY, nullable=False, default=Decimal("0"), server_default="0"
     )
     total: Mapped[Decimal] = mapped_column(
+        MONEY, nullable=False, default=Decimal("0"), server_default="0"
+    )
+    payment_method: Mapped[PaymentMethod] = mapped_column(
+        enum_column(PaymentMethod, "payment_method"),
+        nullable=False,
+        default=PaymentMethod.CASH,
+        server_default=PaymentMethod.CASH.value,
+    )
+    amount_paid: Mapped[Decimal] = mapped_column(
         MONEY, nullable=False, default=Decimal("0"), server_default="0"
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

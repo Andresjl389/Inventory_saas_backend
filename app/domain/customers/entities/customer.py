@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 
 from app.domain.shared.document import DocumentType
 from app.domain.shared.entities import TenantEntity
@@ -13,6 +14,10 @@ class Customer(TenantEntity):
     phone: str | None = None
     address: str | None = None
     is_active: bool = True
+    # Tope de fiado. 0 = sin tope, igual que los límites de los planes: "sin
+    # límite" es un valor real y un NULL habría que tratarlo aparte en cada
+    # comparación.
+    credit_limit: Decimal = Decimal("0")
 
     def deactivate(self) -> None:
         self.is_active = False

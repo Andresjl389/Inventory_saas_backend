@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
+from app.domain.credit.entities.account import PaymentMethod
+from app.domain.credit.exceptions import CreditSaleNeedsCustomerError, OverpaidSaleError
 from app.domain.sales.exceptions import (
     EmptySaleError,
     InvalidSaleItemError,
@@ -71,12 +73,18 @@ class Sale(TenantEntity):
     discount: Decimal = ZERO
     tax: Decimal = ZERO
     total: Decimal = ZERO
+    # Cómo entró la plata que se pagó ahora. CREDIT significa que no entró nada.
+    payment_method: PaymentMethod = PaymentMethod.CASH
+    # Cuánto se pagó en el momento. Menos que el total deja saldo a deber, que
+    # es el caso corriente de un abono parcial: "le doy 5 mil y le quedo debiendo".
+    amount_paid: Decimal = ZERO
     notes: str | None = None
     created_by: uuid.UUID | None = None
     items: list[SaleItem] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.recalculate_totals()
+        self.amount_paid = money(self.amount_paid)
 
     def recalculate_totals(self) -> None:
         self.subtotal = money(sum((item.gross for item in self.items), ZERO))
@@ -87,6 +95,38 @@ class Sale(TenantEntity):
     def require_items(self) -> None:
         if not self.items:
             raise EmptySaleError()
+
+    @property
+    def outstanding(self) -> Decimal:
+        """Lo que queda debiendo. Mayor que cero es una venta fiada."""
+        return money(self.total - self.amount_paid)
+
+    @property
+    def is_on_credit(self) -> bool:
+        return self.outstanding > 0
+
+    def settle(self, method: PaymentMethod, amount_paid: Decimal | None) -> None:
+        """Fija cómo se pagó, antes de completar.
+
+        Sin monto explícito, un método de contado paga todo y CREDIT no paga
+        nada: los dos casos de mostrador no obligan al cliente a calcular nada.
+        """
+        self.payment_method = method
+        if amount_paid is None:
+            self.amount_paid = ZERO if method is PaymentMethod.CREDIT else self.total
+        else:
+            self.amount_paid = money(amount_paid)
+
+        if self.amount_paid < 0:
+            raise OverpaidSaleError("Lo pagado no puede ser negativo")
+        if self.amount_paid > self.total:
+            raise OverpaidSaleError(
+                "Lo pagado no puede superar el total de la venta",
+                details={"total": str(self.total), "amount_paid": str(self.amount_paid)},
+            )
+        if self.is_on_credit and self.customer_id is None:
+            raise CreditSaleNeedsCustomerError()
+        self.touch()
 
     @property
     def affects_stock(self) -> bool:

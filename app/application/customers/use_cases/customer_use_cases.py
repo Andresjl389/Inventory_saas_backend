@@ -40,6 +40,7 @@ class CreateCustomerUseCase:
                 email=str(command.email) if command.email else None,
                 phone=command.phone,
                 address=command.address,
+                credit_limit=command.credit_limit,
             )
         )
         return CustomerDTO.model_validate(customer, from_attributes=True)
@@ -114,6 +115,8 @@ class UpdateCustomerUseCase:
             customer.phone = command.phone
         if command.address is not None:
             customer.address = command.address
+        if command.credit_limit is not None:
+            customer.credit_limit = command.credit_limit
         if command.is_active is not None:
             customer.activate() if command.is_active else customer.deactivate()
         customer.touch()

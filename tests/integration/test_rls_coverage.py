@@ -17,9 +17,10 @@ pytestmark = requires_db
 # it is checked separately below.
 SELF_SCOPED_TABLES = {"companies"}
 
-# The audit log is append-only: it has SELECT and INSERT policies and
-# deliberately no UPDATE or DELETE, so nobody can rewrite history.
-APPEND_ONLY_TABLES = {"audit_logs"}
+# Append-only: SELECT e INSERT, y deliberadamente ni UPDATE ni DELETE, para que
+# nadie reescriba la historia. El libro del fiado es lo que hace que "cuentas
+# claras" signifique algo.
+APPEND_ONLY_TABLES = {"audit_logs", "customer_account_entries"}
 
 # No company_id of their own -- they inherit scope from the role they belong to
 # (role_permissions) or are a global catalogue (permissions, plans).
@@ -182,3 +183,52 @@ async def test_a_platform_operator_can_create_a_company(session):
         await session.execute(sql("SELECT name FROM companies WHERE id = :id"), {"id": company_id})
     ).scalar_one()
     assert visible == "Legítima"
+
+
+async def test_the_credit_ledger_cannot_be_rewritten(session):
+    """El cuaderno de fiado fallaba justo aquí: un número que alguien tacha.
+    En la base no hay forma de tachar."""
+    commands = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT cmd FROM pg_policies
+                WHERE schemaname = 'public' AND tablename = 'customer_account_entries'
+                """
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    assert set(commands) == {"SELECT", "INSERT"}
+
+
+async def test_the_ledger_rejects_a_sign_that_contradicts_its_type(session):
+    """La restricción vive en la base, no solo en el dominio: un abono que
+    suma deuda no puede entrar por ninguna vía."""
+    import uuid
+
+    from sqlalchemy.exc import DBAPIError
+
+    company_id = uuid.uuid4()
+    await session.execute(
+        text("SELECT set_config('app.current_company_id', :v, true)"),
+        {"v": str(company_id)},
+    )
+
+    with pytest.raises(DBAPIError) as excinfo:
+        await session.execute(
+            text(
+                """
+                INSERT INTO customer_account_entries
+                    (company_id, customer_id, entry_type, amount)
+                VALUES (:company_id, :customer_id, 'PAYMENT', 500)
+                """
+            ),
+            {"company_id": company_id, "customer_id": uuid.uuid4()},
+        )
+
+    assert "ck_customer_account_entries_amount_sign_matches_type" in str(excinfo.value)

@@ -9,6 +9,10 @@ from app.infrastructure.database.models.authorization import (
     RolePermissionModel,
 )
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
+from app.infrastructure.database.models.credit import (
+    AccountEntryModel,
+    CustomerBalanceModel,
+)
 from app.infrastructure.database.models.file import FileModel
 from app.infrastructure.database.models.imports import ImportErrorModel, ImportJobModel
 from app.infrastructure.database.models.inventory import (
@@ -29,10 +33,12 @@ from app.infrastructure.database.models.sale import SaleItemModel, SaleModel
 from app.infrastructure.database.models.user import UserModel
 
 __all__ = [
+    "AccountEntryModel",
     "AuditLogModel",
     "CategoryModel",
     "CompanyMemberModel",
     "CompanyModel",
+    "CustomerBalanceModel",
     "CustomerModel",
     "FileModel",
     "ImportErrorModel",

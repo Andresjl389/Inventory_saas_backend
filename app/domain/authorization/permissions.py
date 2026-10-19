@@ -52,6 +52,8 @@ CATALOG: tuple[PermissionDefinition, ...] = (
     PermissionDefinition("customers.write", "partners", "Create and edit customers"),
     PermissionDefinition("suppliers.read", "partners", "View suppliers"),
     PermissionDefinition("suppliers.write", "partners", "Create and edit suppliers"),
+    PermissionDefinition("credit.read", "credit", "Ver saldos de fiado"),
+    PermissionDefinition("credit.manage", "credit", "Registrar abonos y ajustar cuentas"),
     PermissionDefinition("sales.read", "sales", "View sales"),
     PermissionDefinition("sales.create", "sales", "Create and complete sales"),
     PermissionDefinition("sales.cancel", "sales", "Cancel and refund sales"),
@@ -89,6 +91,7 @@ SYSTEM_ROLE_PERMISSIONS: dict[SystemRole, frozenset[str]] = {
             "suppliers.read",
             "suppliers.write",
             "sales.read",
+            "credit.read",
             "purchases.read",
             "purchases.create",
             "purchases.cancel",
@@ -110,6 +113,9 @@ SYSTEM_ROLE_PERMISSIONS: dict[SystemRole, frozenset[str]] = {
             "customers.write",
             "sales.read",
             "sales.create",
+            # El vendedor fía y recibe abonos: es el mostrador.
+            "credit.read",
+            "credit.manage",
             "files.read",
             "imports.read",
         }

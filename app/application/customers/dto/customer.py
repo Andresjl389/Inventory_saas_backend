@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -14,6 +15,8 @@ class CreateCustomerCommand(BaseModel):
     email: EmailStr | None = None
     phone: str | None = Field(default=None, max_length=50)
     address: str | None = None
+    # Tope de fiado. 0 = sin tope.
+    credit_limit: Decimal = Field(default=Decimal("0"), ge=0, max_digits=18, decimal_places=4)
 
 
 class UpdateCustomerCommand(BaseModel):
@@ -23,6 +26,7 @@ class UpdateCustomerCommand(BaseModel):
     email: EmailStr | None = None
     phone: str | None = Field(default=None, max_length=50)
     address: str | None = None
+    credit_limit: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
     is_active: bool | None = None
 
 
@@ -44,6 +48,7 @@ class CustomerDTO(BaseModel):
     email: str | None
     phone: str | None
     address: str | None
+    credit_limit: Decimal
     is_active: bool
     created_at: datetime
     updated_at: datetime

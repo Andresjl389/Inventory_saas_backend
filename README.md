@@ -4,7 +4,8 @@ Backend multi-tenant construido sobre la arquitectura descrita en `BACKEND.md`:
 FastAPI + PostgreSQL con Row Level Security, arquitectura hexagonal y aislamiento
 de tenants en tres capas.
 
-> Estado: **Fases 1 a 5 implementadas**. 71 endpoints, 24 tablas, 236 tests.
+> Estado: **Fases 1 a 5 implementadas**, más el fiado. 76 endpoints, 26 tablas,
+> 278 tests.
 > Identity, empresas, miembros, tenant context, RLS, categorías, productos,
 > bodegas, inventario con ledger, clientes, proveedores, ventas, compras,
 > **super admin de plataforma**, roles y permisos en base de datos, auditoría,
@@ -574,7 +575,69 @@ solos.
 
 ---
 
-## 9. Reportes, notificaciones y jobs
+## 9. Fiado: la cuenta corriente del cliente
+
+Lo que el cuaderno hacía mal —un número que alguien tacha y vuelve a escribir—
+aquí es un libro append-only, con el mismo patrón que el inventario:
+
+```text
+customer_balances.balance == SUM(customer_account_entries.amount)
+```
+
+El `amount` lleva signo: positivo aumenta la deuda (una venta fiada), negativo
+la reduce (un abono). Guardar el signo en vez de una magnitud más un tipo es lo
+que vuelve ese invariante una suma trivial de verificar, y hay un test que lo
+hace. El libro no tiene policies de UPDATE ni DELETE: en la base no hay forma
+de tachar.
+
+### Cómo se fía
+
+Una venta lleva `payment_method` y `amount_paid`; lo que falte queda a deber:
+
+```bash
+# De contado (por defecto): paga todo
+curl -X POST localhost:8000/api/v1/sales "${AUTH[@]}" -d '{
+  "warehouse_id":"'$W'", "complete":true,
+  "items":[{"product_id":"'$P'","quantity":"2"}]}'
+
+# Fiado completo
+... "customer_id":"'$C'", "payment_method":"CREDIT" ...
+
+# «Le doy 5 mil y le quedo debiendo»
+... "customer_id":"'$C'", "payment_method":"CASH", "amount_paid":"5000" ...
+```
+
+- Fiar **exige cliente**: no se le fía a nadie (`CREDIT_SALE_NEEDS_CUSTOMER`).
+- `customers.credit_limit` es el cupo; 0 = sin tope. Una venta que lo supere se
+  rechaza entera con el saldo y el cupo en `details`.
+- Cancelar o devolver una venta fiada **borra la deuda que dejó**, en la misma
+  transacción que devuelve el stock.
+
+### Abonos y cuentas claras
+
+```text
+GET  /credit/summary                          cuánto me deben en total
+GET  /credit/accounts                         quién debe, el que más primero
+GET  /credit/accounts/{customer_id}           saldo e historial de uno
+POST /credit/accounts/{customer_id}/payments  registrar un abono
+POST /credit/accounts/{customer_id}/adjustments  perdón o corrección, con nota
+```
+
+Un abono mayor a la deuda se rechaza: casi siempre es un error de digitación
+(50000 por 5000), y los anticipos son otro producto.
+
+### Saldo a favor
+
+El saldo puede quedar **negativo**, y eso significa que la tienda le debe al
+cliente. Pasa al devolver una venta que ya tenía abonos: el cliente pagó por
+algo que ya no tiene. El sistema no puede saber si el tendero le entregó la
+plata o se la dejó para la próxima, así que lo registra y lo muestra —`owes` e
+`in_favor` vienen separados para que la pantalla no razone sobre signos— y el
+tendero lo salda con un ajuste cuando corresponda.
+
+---
+
+## 10. Reportes, notificaciones y jobs
 
 ### Reportes
 
@@ -621,7 +684,7 @@ El payload se limpia antes de escribirse: `password`, `password_hash`,
 
 ---
 
-## 10. Archivos adjuntos
+## 11. Archivos adjuntos
 
 Los bytes viven fuera de PostgreSQL (`BACKEND.md` §42). Hoy en una carpeta
 local; mañana en un bucket S3 sin tocar nada por encima del adaptador.
@@ -698,7 +761,7 @@ ni los casos de uso, ni la tabla. Hoy `factory.py` falla ruidosamente si pides
 
 ---
 
-## 11. Carga masiva desde Excel
+## 12. Carga masiva desde Excel
 
 El problema real no es leer un .xlsx: es que los datos llegan como llegan.
 Encabezados que nadie nombró igual dos veces, `$ 15.000` junto a `8.500,50`,
@@ -833,7 +896,7 @@ catálogo.
 
 ---
 
-## 12. Cómo añadir un módulo nuevo
+## 13. Cómo añadir un módulo nuevo
 
 Tomando `products` o `sales` como plantilla:
 
@@ -855,7 +918,7 @@ Tomando `products` o `sales` como plantilla:
 
 ---
 
-## 13. Errores
+## 14. Errores
 
 Formato único (`BACKEND.md` §38):
 
@@ -869,7 +932,7 @@ que las traduce a HTTP.
 
 ---
 
-## 14. Decisiones de diseño
+## 15. Decisiones de diseño
 
 - **Dinero en `NUMERIC(18,4)`**, nunca `FLOAT`. `Decimal` en todo el dominio.
 - **Contraseñas con bcrypt**; se rechazan claves de más de 72 bytes en vez de
@@ -916,6 +979,11 @@ que las traduce a HTTP.
 - **La simulación de una importación es la importación**, revertida con un
   savepoint. Una validación aparte sería una segunda implementación de las
   reglas y acabaría discrepando de la primera justo cuando importa.
+- **El saldo de fiado se deriva, nunca se escribe.** Mismo patrón que el stock:
+  un libro append-only y una caché escrita bajo el mismo bloqueo. El cuaderno de
+  fiado falla justo donde un número se puede tachar.
+- **Un saldo negativo tiene nombre**: la tienda le debe al cliente. Esconderlo
+  sería lo contrario de «cuentas claras».
 - **El importador nunca adivina en silencio.** Propone un mapeo con su
   confianza y enseña el valor convertido al lado del crudo; lo que no puede
   leer es un error de fila, no un valor inventado.
@@ -935,7 +1003,7 @@ que las traduce a HTTP.
   quieren costo promedio ponderado en vez de último costo, y eso es una
   decisión del negocio, no un default.
 
-## 15. Lo que falta
+## 16. Lo que falta
 
 - **Adaptador S3.** El puerto, los endpoints y la tabla ya están; falta
   escribir `app/infrastructure/storage/s3.py` y registrarlo en `factory.py`.

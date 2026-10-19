@@ -5,11 +5,14 @@ two will diverge (credit terms on one side, lead times and payment terms on the
 other), and merging them now would make that split a migration.
 """
 
+from decimal import Decimal
+
 from sqlalchemy import Boolean, Index, String, Text, UniqueConstraint, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.shared.document import DocumentType
 from app.infrastructure.database.base import (
+    MONEY,
     Base,
     TenantMixin,
     TimestampMixin,
@@ -34,6 +37,11 @@ class _PartyColumns:
 
 class CustomerModel(UUIDPrimaryKeyMixin, TenantMixin, TimestampMixin, _PartyColumns, Base):
     __tablename__ = "customers"
+
+    # Tope de fiado. 0 = sin tope.
+    credit_limit: Mapped[Decimal] = mapped_column(
+        MONEY, nullable=False, default=Decimal("0"), server_default="0"
+    )
 
     __table_args__ = (
         UniqueConstraint("company_id", "document_type", "document_number"),

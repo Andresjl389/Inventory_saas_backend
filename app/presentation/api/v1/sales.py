@@ -21,6 +21,7 @@ from app.domain.sales.entities.sale import SaleStatus
 from app.domain.shared.pagination import MAX_PAGE_SIZE
 from app.domain.tenants.tenant_context import TenantContext
 from app.presentation.api.dependencies.repositories import (
+    CreditServiceDep,
     CustomerRepoDep,
     ProductRepoDep,
     SaleRepoDep,
@@ -65,10 +66,18 @@ async def create_sale(
     warehouses: WarehouseRepoDep,
     customers: CustomerRepoDep,
     stock_service: StockServiceDep,
+    credit_service: CreditServiceDep,
 ) -> SaleDTO:
-    """Create a sale. With `complete: true` the stock moves in the same
-    transaction -- nothing is half-done if a line runs out of stock."""
-    use_case = CreateSaleUseCase(sales, products, warehouses, customers, stock_service)
+    """Crea una venta.
+
+    Con `complete: true` el stock se mueve en la misma transacción: si una
+    línea se queda sin stock no queda nada a medias. Con
+    `payment_method: CREDIT` la venta queda fiada y carga la cuenta del
+    cliente en esa misma transacción.
+    """
+    use_case = CreateSaleUseCase(
+        sales, products, warehouses, customers, stock_service, credit_service
+    )
     return await use_case.execute(command, tenant=tenant)
 
 
@@ -79,20 +88,40 @@ async def get_sale(sale_id: uuid.UUID, tenant: ReadDep, sales: SaleRepoDep) -> S
 
 @router.post("/{sale_id}/complete", response_model=SaleDTO)
 async def complete_sale(
-    sale_id: uuid.UUID, tenant: CreateDep, sales: SaleRepoDep, stock_service: StockServiceDep
+    sale_id: uuid.UUID,
+    tenant: CreateDep,
+    sales: SaleRepoDep,
+    stock_service: StockServiceDep,
+    credit_service: CreditServiceDep,
+    customers: CustomerRepoDep,
 ) -> SaleDTO:
-    return await CompleteSaleUseCase(sales, stock_service).execute(sale_id, tenant=tenant)
+    return await CompleteSaleUseCase(sales, stock_service, credit_service, customers).execute(
+        sale_id, tenant=tenant
+    )
 
 
 @router.post("/{sale_id}/cancel", response_model=SaleDTO)
 async def cancel_sale(
-    sale_id: uuid.UUID, tenant: CancelDep, sales: SaleRepoDep, stock_service: StockServiceDep
+    sale_id: uuid.UUID,
+    tenant: CancelDep,
+    sales: SaleRepoDep,
+    stock_service: StockServiceDep,
+    credit_service: CreditServiceDep,
 ) -> SaleDTO:
-    return await CancelSaleUseCase(sales, stock_service).execute(sale_id, tenant=tenant)
+    """Devuelve el stock y, si la venta quedó fiada, borra la deuda que dejó."""
+    return await CancelSaleUseCase(sales, stock_service, credit_service).execute(
+        sale_id, tenant=tenant
+    )
 
 
 @router.post("/{sale_id}/refund", response_model=SaleDTO)
 async def refund_sale(
-    sale_id: uuid.UUID, tenant: CancelDep, sales: SaleRepoDep, stock_service: StockServiceDep
+    sale_id: uuid.UUID,
+    tenant: CancelDep,
+    sales: SaleRepoDep,
+    stock_service: StockServiceDep,
+    credit_service: CreditServiceDep,
 ) -> SaleDTO:
-    return await RefundSaleUseCase(sales, stock_service).execute(sale_id, tenant=tenant)
+    return await RefundSaleUseCase(sales, stock_service, credit_service).execute(
+        sale_id, tenant=tenant
+    )

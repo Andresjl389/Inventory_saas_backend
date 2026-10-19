@@ -56,6 +56,8 @@ class SqlAlchemySaleRepository:
             customer_id=sale.customer_id,
             warehouse_id=sale.warehouse_id,
             status=sale.status,
+            payment_method=sale.payment_method,
+            amount_paid=sale.amount_paid,
             subtotal=sale.subtotal,
             discount=sale.discount,
             tax=sale.tax,
@@ -91,6 +93,8 @@ class SqlAlchemySaleRepository:
             raise LookupError(f"Sale {sale.id} disappeared before update")
         model.status = sale.status
         model.customer_id = sale.customer_id
+        model.payment_method = sale.payment_method
+        model.amount_paid = sale.amount_paid
         model.subtotal = sale.subtotal
         model.discount = sale.discount
         model.tax = sale.tax

@@ -7,6 +7,7 @@ stay short.
 from app.domain.audit.entities.audit_entry import AuditEntry
 from app.domain.authorization.entities.role import Permission, Role
 from app.domain.billing.entities.plan import Plan, Subscription
+from app.domain.credit.entities.account import AccountEntry, CustomerBalance
 from app.domain.customers.entities.customer import Customer
 from app.domain.files.entities.stored_file import StoredFile
 from app.domain.identity.entities.user import User
@@ -24,6 +25,10 @@ from app.domain.tenants.entities.company import Company
 from app.domain.tenants.entities.company_member import CompanyMember
 from app.infrastructure.database.models.authorization import PermissionModel, RoleModel
 from app.infrastructure.database.models.company import CompanyMemberModel, CompanyModel
+from app.infrastructure.database.models.credit import (
+    AccountEntryModel,
+    CustomerBalanceModel,
+)
 from app.infrastructure.database.models.file import FileModel
 from app.infrastructure.database.models.imports import ImportErrorModel, ImportJobModel
 from app.infrastructure.database.models.inventory import (
@@ -171,6 +176,7 @@ def customer_to_domain(model: CustomerModel) -> Customer:
         phone=model.phone,
         address=model.address,
         is_active=model.is_active,
+        credit_limit=model.credit_limit,
     )
 
 
@@ -199,6 +205,8 @@ def sale_to_domain(model: SaleModel) -> Sale:
         customer_id=model.customer_id,
         warehouse_id=model.warehouse_id,
         status=model.status,
+        payment_method=model.payment_method,
+        amount_paid=model.amount_paid,
         notes=model.notes,
         created_by=model.created_by,
         items=[
@@ -383,4 +391,30 @@ def import_error_to_domain(model: ImportErrorModel) -> ImportRowError:
         field_key=model.field_key,
         value=model.value,
         message=model.message,
+    )
+
+
+def account_entry_to_domain(model: AccountEntryModel) -> AccountEntry:
+    return AccountEntry(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.created_at,
+        company_id=model.company_id,
+        customer_id=model.customer_id,
+        entry_type=model.entry_type,
+        amount=model.amount,
+        reference_id=model.reference_id,
+        notes=model.notes,
+        created_by=model.created_by,
+    )
+
+
+def customer_balance_to_domain(model: CustomerBalanceModel) -> CustomerBalance:
+    return CustomerBalance(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        company_id=model.company_id,
+        customer_id=model.customer_id,
+        balance=model.balance,
     )

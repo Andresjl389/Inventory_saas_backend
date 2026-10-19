@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from app.application.audit.services.audit_service import AuditService
+from app.application.credit.services.credit_service import CreditService
 from app.application.inventory.services.stock_service import StockService
 from app.domain.files.storage import FileStorage
 from app.domain.imports.table import SpreadsheetReader
@@ -27,6 +28,7 @@ from app.infrastructure.database.repositories.company_overview_repository import
     SqlAlchemyCompanyOverviewRepository,
 )
 from app.infrastructure.database.repositories.company_repository import SqlAlchemyCompanyRepository
+from app.infrastructure.database.repositories.credit_repository import SqlAlchemyCreditRepository
 from app.infrastructure.database.repositories.file_repository import SqlAlchemyFileRepository
 from app.infrastructure.database.repositories.import_repository import (
     SqlAlchemyImportJobRepository,
@@ -193,6 +195,16 @@ def get_audit_service(session: SessionDep) -> AuditService:
     return AuditService(SqlAlchemyAuditRepository(session))
 
 
+def get_credit_repository(session: SessionDep) -> SqlAlchemyCreditRepository:
+    return SqlAlchemyCreditRepository(session)
+
+
+def get_credit_service(session: SessionDep) -> CreditService:
+    """El único escritor de saldos de fiado: ventas, abonos y ajustes pasan
+    todos por aquí."""
+    return CreditService(SqlAlchemyCreditRepository(session))
+
+
 def get_stock_service(session: SessionDep) -> StockService:
     """The only writer of product_stock; sales, purchases, transfers and manual
     adjustments all go through it."""
@@ -240,3 +252,5 @@ CompanyOverviewDep = Annotated[
     SqlAlchemyCompanyOverviewRepository, Depends(get_company_overview_repository)
 ]
 SpreadsheetReaderDep = Annotated[SpreadsheetReader, Depends(get_spreadsheet_reader)]
+CreditRepoDep = Annotated[SqlAlchemyCreditRepository, Depends(get_credit_repository)]
+CreditServiceDep = Annotated[CreditService, Depends(get_credit_service)]

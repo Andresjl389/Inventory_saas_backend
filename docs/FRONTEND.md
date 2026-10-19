@@ -352,7 +352,7 @@ puede crear los suyos.
 | `OWNER` | El dueño que nombra el super admin | Comodín `*`: todo dentro de su empresa |
 | `ADMIN` | Segundo al mando | Todo menos el comodín |
 | `INVENTORY_MANAGER` | Bodega y compras | Catálogo, inventario, compras, reportes |
-| `SELLER` | Mostrador | Ver catálogo y stock, crear ventas, clientes |
+| `SELLER` | Mostrador | Ver catálogo y stock, crear ventas, clientes, **fiar y recibir abonos** |
 
 Los roles del sistema son **iguales para todas las empresas y nadie los puede
 editar** (`403 SYSTEM_ROLE_IMMUTABLE`). Quien quiera «ADMIN menos algo» crea un
@@ -375,7 +375,7 @@ POST /api/v1/roles
 - Un rol que todavía tiene miembros no se borra (`409 ROLE_IN_USE`).
 - `PATCH` reemplaza la lista de permisos **entera**, no hace merge.
 
-`GET /api/v1/roles/permissions` devuelve los 34 permisos con etiqueta y módulo
+`GET /api/v1/roles/permissions` devuelve los 36 permisos con etiqueta y módulo
 — es lo que necesitas para la pantalla de edición.
 
 | Módulo | Permisos |
@@ -385,6 +385,7 @@ POST /api/v1/roles
 | catalog | `categories.read` `categories.write` `products.read` `products.create` `products.update` `products.delete` |
 | inventory | `warehouses.read` `warehouses.write` `inventory.read` `inventory.adjust` `inventory.transfer` |
 | partners | `customers.read` `customers.write` `suppliers.read` `suppliers.write` |
+| credit | `credit.read` `credit.manage` |
 | sales | `sales.read` `sales.create` `sales.cancel` |
 | purchases | `purchases.read` `purchases.create` `purchases.cancel` |
 | imports | `imports.read` `imports.run` |
@@ -498,6 +499,8 @@ pantallas de error — ahorra horas de diagnóstico.
 | `CompanyStatus` | `ACTIVE` `SUSPENDED` `INACTIVE` |
 | `DocumentType` | `NIT` `CC` `CE` `PASSPORT` `RUT` `OTHER` |
 | `SaleStatus` | `DRAFT` `COMPLETED` `CANCELLED` `REFUNDED` |
+| `PaymentMethod` | `CASH` `TRANSFER` `CREDIT` |
+| `EntryType` (fiado) | `SALE` `PAYMENT` `SALE_REVERSED` `ADJUSTMENT` |
 | `PurchaseStatus` | `DRAFT` `COMPLETED` `CANCELLED` |
 | `MovementType` | `PURCHASE` `SALE` `RETURN` `ADJUSTMENT` `TRANSFER_IN` `TRANSFER_OUT` |
 | `ReferenceType` | `SALE` `PURCHASE` `TRANSFER` `MANUAL` |
@@ -569,6 +572,8 @@ Con eso dices «solo quedan 8 unidades» en vez de «error».
 **Inventario**: `INSUFFICIENT_STOCK`, `SAME_WAREHOUSE_TRANSFER`, `INACTIVE_WAREHOUSE`
 **Ventas/compras**: `EMPTY_SALE`, `INVALID_SALE_TRANSITION`, `INACTIVE_CUSTOMER`,
 `INACTIVE_PRODUCT`
+**Fiado**: `CREDIT_SALE_NEEDS_CUSTOMER`, `OVERPAID_SALE`, `CREDIT_LIMIT_EXCEEDED`,
+`PAYMENT_EXCEEDS_BALANCE`, `INVALID_ACCOUNT_ENTRY`
 **Archivos**: `FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`, `EMPTY_FILE`
 **Importación**: `MISSING_REQUIRED_COLUMNS`, `UNKNOWN_TARGET_FIELD`,
 `IMPORT_NOT_OPEN`, `UNREADABLE_FILE`
@@ -629,6 +634,57 @@ POST /api/v1/inventory/transfers    {"product_id","source_warehouse_id","destina
 
 Los movimientos son el historial auditable, y `reference_id` apunta a la venta
 o compra que lo originó — puedes enlazar del kardex al documento.
+
+### Cuentas de fiado
+
+```http
+GET  /api/v1/credit/summary                            cuánto me deben en total
+GET  /api/v1/credit/accounts?search=&only_with_balance= quién debe
+GET  /api/v1/credit/accounts/{customer_id}             saldo e historial
+POST /api/v1/credit/accounts/{customer_id}/payments    registrar un abono
+POST /api/v1/credit/accounts/{customer_id}/adjustments perdón o corrección
+```
+
+La lista viene ordenada por saldo, el que más debe primero. Con
+`only_with_balance=false` incluye a los que están al día, que es lo que
+necesitas para elegir a quién fiarle.
+
+La cuenta de un cliente trae el saldo ya descompuesto, para que la pantalla no
+tenga que razonar sobre signos:
+
+```json
+{"customer_id": "…", "customer_name": "Doña Rosa", "phone": "3001112233",
+ "balance": "2400.0000", "owes": "2400.0000", "in_favor": "0",
+ "credit_limit": "20000.0000", "available_credit": "17600.0000",
+ "entries": [{"entry_type": "PAYMENT", "amount": "-5000.0000",
+              "notes": "Abono del viernes", "created_at": "…"}],
+ "total_entries": 2, "page": 1, "size": 20, "pages": 1}
+```
+
+`entries` es el historial, lo más reciente primero, y cada peso del saldo se
+explica con uno de ellos. Los tipos son `SALE`, `PAYMENT`, `SALE_REVERSED` y
+`ADJUSTMENT`; el `amount` lleva signo (positivo debe más, negativo debe menos).
+
+**Registrar un abono** devuelve la cuenta ya actualizada, que es justo lo que la
+pantalla necesita pintar enseguida:
+
+```json
+POST /credit/accounts/{id}/payments
+{"amount": "5000", "method": "CASH", "notes": "Abono del viernes"}
+```
+
+Un abono mayor a la deuda se rechaza (`PAYMENT_EXCEEDS_BALANCE`): casi siempre
+es un error de digitación, 50000 por 5000.
+
+> **El saldo puede ser negativo, y tiene nombre.** `in_favor` mayor que cero
+> significa que **la tienda le debe al cliente**. Pasa al devolver una venta que
+> ya tenía abonos. El tendero lo salda con un ajuste
+> (`POST /adjustments` con monto positivo y una nota) cuando le entrega la plata.
+> La cuenta sigue apareciendo en la lista: esconder una deuda de la tienda sería
+> lo contrario de «cuentas claras».
+
+Los ajustes exigen `notes`; un ajuste sin explicación es lo que vuelve turbias
+las cuentas.
 
 ### Reportes
 
@@ -880,6 +936,8 @@ primero.
 | Kardex | `GET /inventory/movements?product_id=` | `inventory.read` |
 | Ajuste / traslado | `POST /inventory/adjustments`, `/transfers` | `inventory.adjust` / `.transfer` |
 | Punto de venta | `GET /products`, `GET /customers`, `POST /sales` | `sales.create` |
+| **Cuentas claras** | `GET /credit/summary`, `GET /credit/accounts` | `credit.read` |
+| **Cuenta de un cliente** | `GET /credit/accounts/{id}`, `POST .../payments` | `credit.read` / `.manage` |
 | Ventas | `GET /sales?status=` | `sales.read` |
 | Compras | `GET /purchases`, `POST /purchases` | `purchases.read` / `.create` |
 | Clientes / Proveedores | `/customers`, `/suppliers` | `customers.*` / `suppliers.*` |

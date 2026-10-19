@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.credit.entities.account import PaymentMethod
 from app.domain.sales.entities.sale import SaleStatus
 from app.domain.shared.pagination import MAX_PAGE_SIZE
 
@@ -23,6 +24,11 @@ class CreateSaleCommand(BaseModel):
     customer_id: uuid.UUID | None = None
     items: list[SaleItemCommand] = Field(min_length=1)
     notes: str | None = Field(default=None, max_length=1000)
+    # Cómo entró la plata que se paga ahora. CREDIT = fiado: no entra nada.
+    payment_method: PaymentMethod = PaymentMethod.CASH
+    # Cuánto se paga ahora. Omitido, un método de contado paga todo y CREDIT no
+    # paga nada. Menos que el total deja saldo a deber.
+    amount_paid: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=4)
     # True runs creation and completion in the same transaction, which is the
     # point-of-sale case described in BACKEND.md section 28.
     complete: bool = False
@@ -60,6 +66,10 @@ class SaleDTO(BaseModel):
     discount: Decimal
     tax: Decimal
     total: Decimal
+    payment_method: PaymentMethod
+    amount_paid: Decimal
+    # Lo que queda debiendo. Mayor que cero es una venta fiada.
+    outstanding: Decimal = Decimal("0")
     notes: str | None
     created_by: uuid.UUID | None
     items: list[SaleItemDTO]

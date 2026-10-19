@@ -5,6 +5,7 @@ from app.presentation.api.v1 import (
     auth,
     categories,
     companies,
+    credit,
     customers,
     files,
     imports,
@@ -28,6 +29,7 @@ api_router.include_router(products.router)
 api_router.include_router(warehouses.router)
 api_router.include_router(inventory.router)
 api_router.include_router(customers.router)
+api_router.include_router(credit.router)
 api_router.include_router(suppliers.router)
 api_router.include_router(sales.router)
 api_router.include_router(purchases.router)

@@ -217,3 +217,27 @@ async def start_import(client, hdrs: dict, *, entity: str, payload: bytes, filen
         files={"file": (filename, payload, XLSX_MEDIA_TYPE)},
         data={"entity": entity},
     )
+
+
+async def create_customer(client, hdrs: dict, name: str = "Doña Rosa", **fields) -> str:
+    response = await client.post("/api/v1/customers", headers=hdrs, json={"name": name, **fields})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+async def sell(client, hdrs: dict, warehouse_id: str, product_id: str, **extra):
+    """Una venta completada. `payment_method` y `amount_paid` pasan derecho."""
+    quantity = extra.pop("quantity", "1")
+    payload = {
+        "warehouse_id": warehouse_id,
+        "complete": True,
+        "items": [{"product_id": product_id, "quantity": quantity}],
+        **extra,
+    }
+    return await client.post("/api/v1/sales", headers=hdrs, json=payload)
+
+
+async def balance_of(client, hdrs: dict, customer_id: str) -> Decimal:
+    response = await client.get(f"/api/v1/credit/accounts/{customer_id}", headers=hdrs)
+    assert response.status_code == 200, response.text
+    return Decimal(response.json()["balance"])
