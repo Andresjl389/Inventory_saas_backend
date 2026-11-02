@@ -6,12 +6,11 @@ a confidence. The user confirms or corrects; nothing is guessed silently at
 load time.
 """
 
-import re
-import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from app.domain.imports.schemas import EntitySchema
+from app.domain.shared.text import containment, fold
 
 # Below this, a guess is worse than no guess: the column is left unmapped and
 # the user picks from the list.
@@ -22,13 +21,10 @@ MIN_CONFIDENCE = 0.72
 # a cost column and is not one. The mapping screen marks these for review.
 CONFIDENT = 0.9
 
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
-
 
 def normalise_header(text: str) -> str:
     """Fold a header to something comparable: no accents, no case, no noise."""
-    stripped = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode()
-    return _NON_ALNUM.sub(" ", stripped.lower()).strip()
+    return fold(text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,24 +37,6 @@ class ColumnSuggestion:
     @property
     def needs_review(self) -> bool:
         return self.target is not None and self.confidence < CONFIDENT
-
-
-def _token_containment(candidate: set[str], header: set[str]) -> float:
-    """How well a candidate name sits inside a header, by words.
-
-    A plain substring test is too generous: "costo" is inside "centro de costo
-    interno", which is not a cost column. Scoring by whole words and penalising
-    the words the header adds keeps "precio venta" matching "precio de venta
-    unitario" while rejecting that one.
-    """
-    if not candidate or not header:
-        return 0.0
-    shared = candidate & header
-    if not shared:
-        return 0.0
-    coverage = len(shared) / len(candidate)
-    extra = len(header - candidate) / len(header)
-    return coverage * (1 - 0.5 * extra)
 
 
 def _candidates(schema: EntitySchema) -> list[tuple[str, str]]:
@@ -95,12 +73,10 @@ def suggest_mapping(headers: list[str], schema: EntitySchema) -> list[ColumnSugg
             if candidate == normalised:
                 score, reason = 1.0, "exact"
             else:
-                containment = _token_containment(set(candidate.split()), header_tokens)
+                inside = containment(set(candidate.split()), header_tokens)
                 similarity = SequenceMatcher(None, normalised, candidate).ratio()
                 score, reason = (
-                    (containment, "contains")
-                    if containment >= similarity
-                    else (similarity, "similar")
+                    (inside, "contains") if inside >= similarity else (similarity, "similar")
                 )
             if score > best_score:
                 best_key, best_score, best_reason = key, score, reason
