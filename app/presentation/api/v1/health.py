@@ -9,8 +9,19 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "app": settings.app_name, "env": settings.app_env}
+async def health() -> dict:
+    """Estado y capacidades opcionales de este servidor.
+
+    `features` existe para que el frontend no tenga que descubrir a punta de
+    error qué está encendido: la lectura de facturas se habilita cuando el
+    servidor tenga GPU, y hasta entonces la pantalla puede ocultar el botón.
+    """
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "env": settings.app_env,
+        "features": {"invoice_scanning": settings.invoice_extractor != "disabled"},
+    }
 
 
 @router.get("/health/live")

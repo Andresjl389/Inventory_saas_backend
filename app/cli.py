@@ -7,12 +7,21 @@ needed.
 
     uv run python -m app.cli create-superuser --email ops@example.com
     docker compose exec backend python -m app.cli create-superuser --email ops@example.com
+
+`export-invoice-corpus` y `eval-invoices` son el ciclo del modelo propio:
+sacar las facturas ya revisadas como datos etiquetados, y medir con ellas si el
+lector configurado alcanza.
+
+    uv run python -m app.cli export-invoice-corpus --out data/facturas
+    uv run python -m app.cli eval-invoices --corpus data/facturas
 """
 
 import argparse
 import asyncio
 import getpass
 import sys
+from datetime import date
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -103,6 +112,22 @@ def main(argv: list[str] | None = None) -> int:
         "sweep-files", help="Delete stored blobs that no database row points at"
     ).add_argument("--dry-run", action="store_true", help="Report what would go, delete nothing")
 
+    corpus = subparsers.add_parser(
+        "export-invoice-corpus",
+        help="Export confirmed invoice scans as (image, corrected JSON) pairs",
+    )
+    corpus.add_argument("--out", required=True, help="Destination directory")
+    corpus.add_argument("--company-id", help="Only this company")
+    corpus.add_argument("--since", help="Only invoices dated from this day (YYYY-MM-DD)")
+    corpus.add_argument("--limit", type=int, help="Stop after this many documents")
+
+    evaluate = subparsers.add_parser(
+        "eval-invoices",
+        help="Run the configured reader over an exported corpus and score it",
+    )
+    evaluate.add_argument("--corpus", required=True, help="Directory produced by the export")
+    evaluate.add_argument("--limit", type=int, help="Only the first N documents")
+
     args = parser.parse_args(argv)
 
     if args.command == "sweep-files":
@@ -110,6 +135,39 @@ def main(argv: list[str] | None = None) -> int:
 
         result = asyncio.run(_run(sweep_orphan_files(dry_run=args.dry_run)))
         print(result)
+        return 0
+
+    if args.command == "export-invoice-corpus":
+        import json
+        import uuid as _uuid
+
+        from app.infrastructure.invoices.corpus import export_corpus
+
+        report = asyncio.run(
+            _run(
+                export_corpus(
+                    Path(args.out),
+                    company_id=_uuid.UUID(args.company_id) if args.company_id else None,
+                    since=date.fromisoformat(args.since) if args.since else None,
+                    limit=args.limit,
+                )
+            )
+        )
+        print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "eval-invoices":
+        import json
+
+        from app.infrastructure.invoices.corpus import evaluate_corpus
+        from app.infrastructure.invoices.factory import get_invoice_extractor
+
+        extractor = get_invoice_extractor()
+        print(f"Leyendo con: {extractor.source}", file=sys.stderr)
+        report = asyncio.run(
+            _run(evaluate_corpus(Path(args.corpus), extractor=extractor, limit=args.limit))
+        )
+        print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
         return 0
 
     if args.command == "create-superuser":

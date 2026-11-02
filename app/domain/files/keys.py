@@ -25,6 +25,7 @@ EXTENSION_BY_CONTENT_TYPE = {
     "image/gif": ".gif",
     "application/pdf": ".pdf",
     "text/csv": ".csv",
+    "text/plain": ".txt",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
 }
 

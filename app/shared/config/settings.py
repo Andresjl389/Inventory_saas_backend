@@ -54,8 +54,43 @@ class Settings(BaseSettings):
         "image/gif",
         "application/pdf",
         "text/csv",
+        "text/plain",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ]
+
+    # Lectura de facturas (OCR).
+    # "disabled" por defecto, a propósito: el escaneo está construido y probado
+    # pero el modelo queda para cuando el servidor tenga GPU. Así el endpoint
+    # responde "no está habilitado" en vez de intentar hablarle a un servidor
+    # de inferencia que no existe y fallar con un error de conexión.
+    # "local" = nuestro propio modelo (vLLM, llama.cpp, Ollama); es lo que se
+    # enciende el día que haya GPU, y son dos variables de entorno.
+    # "claude" = la vara de medir, necesita el extra `claude`.
+    # "text" = adaptador determinista de las pruebas: ni llave ni red.
+    invoice_extractor: Literal["disabled", "local", "claude", "text"] = "disabled"
+    invoice_timeout_seconds: float = 180.0
+
+    # Servidor de inferencia propio.
+    invoice_local_url: str = "http://localhost:8080/v1"
+    invoice_local_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    # Solo si pusiste el servidor detrás de una llave; en una red privada no
+    # hace falta.
+    invoice_local_api_key: str | None = None
+    # Forzar la salida al esquema JSON es lo que vuelve usable un modelo de 7B.
+    # Bájalo a "json_object" si tu servidor no soporta json_schema.
+    invoice_local_json_mode: Literal["json_schema", "json_object", "none"] = "json_schema"
+    # El costo de un modelo de visión es por píxel: 1600 px de lado largo deja
+    # legible una factura y recorta el trabajo a una fracción.
+    invoice_max_image_side: int = 1600
+    invoice_max_pages: int = 4
+
+    # La vara de medir (opcional).
+    anthropic_api_key: str | None = None
+    invoice_model: str = "claude-opus-5-5"
+    # Cuántos productos del catálogo se cargan para emparejar los renglones.
+    # Una tienda tiene cientos; el tope evita que una empresa grande traiga
+    # decenas de miles a memoria en cada escaneo.
+    invoice_match_candidates: int = 5000
 
     s3_endpoint: str | None = None
     s3_bucket: str | None = None

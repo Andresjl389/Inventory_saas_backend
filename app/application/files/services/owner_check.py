@@ -21,6 +21,7 @@ UNSCOPED_OWNER_TYPES = frozenset(
     {
         FileOwnerType.COMPANY,
         FileOwnerType.IMPORT,
+        FileOwnerType.INVOICE,
         FileOwnerType.EXPORT,
         FileOwnerType.REPORT,
     }

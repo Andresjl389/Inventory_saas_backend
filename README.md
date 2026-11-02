@@ -896,7 +896,200 @@ catálogo.
 
 ---
 
-## 13. Cómo añadir un módulo nuevo
+## 13. Lectura de facturas: el modelo propio
+
+> **Estado: diferido.** Todo lo de esta sección está construido, probado y
+> apagado: `INVOICE_EXTRACTOR=disabled` es el valor por defecto porque el
+> modelo espera a que el servidor tenga GPU. Mientras tanto
+> `POST /invoices/scans` responde `503 INVOICE_SCANNING_DISABLED` y
+> `GET /health` lo publica en `features.invoice_scanning`, así que el frontend
+> puede ocultar el botón en vez de descubrirlo fallando.
+>
+> **Encenderlo son dos variables de entorno** (`INVOICE_EXTRACTOR=local` y
+> `INVOICE_LOCAL_URL`), ni una línea de código. Hay una prueba que lo afirma,
+> para que no se descubra dentro de seis meses que quedó algo a medias.
+
+El escaneo de facturas está pensado para correr contra **nuestro propio modelo,
+en nuestro servidor**. No por ideología: una tienda escanea decenas de facturas
+al mes y el costo por documento de una API externa crece con cada cliente del
+SaaS, mientras que una GPU se paga una vez. Y un modelo propio se puede afinar
+con nuestras facturas, que es algo que ninguna API permite.
+
+Hay un punto de equilibrio que conviene tener presente al prenderlo: por debajo
+de unos cientos de documentos al mes, la luz de una GPU encendida 24/7 cuesta
+más que pagar por documento en una API. Lo que no cambia con el volumen es la
+independencia, que las facturas no salgan del servidor, y poder afinar.
+
+### La arquitectura, en una línea
+
+El dominio define un puerto; la infraestructura trae adaptadores.
+
+```text
+app/domain/invoices/extraction.py     InvoiceExtractor (puerto) + ExtractedInvoice
+app/domain/invoices/rendering.py      DocumentRasterizer (puerto)
+app/domain/invoices/matching.py       emparejar renglón ↔ catálogo (sin modelo)
+app/domain/invoices/scoring.py        medir una lectura contra la verdad
+
+app/infrastructure/invoices/prompting.py        prompt + esquema, uno solo
+app/infrastructure/invoices/local_extractor.py  ← el camino: servidor propio
+app/infrastructure/invoices/claude_extractor.py   la vara de medir (extra)
+app/infrastructure/invoices/text_extractor.py     pruebas y desarrollo
+app/infrastructure/invoices/rasterizer.py       PDF y fotos → imágenes
+app/infrastructure/invoices/corpus.py           datos de entrenamiento + eval
+```
+
+Nada por encima del adaptador sabe qué modelo hay detrás. Cambiar de modelo —o
+pasar a uno afinado con nuestras facturas— es cambiar `INVOICE_LOCAL_MODEL`.
+
+### El servidor de inferencia
+
+El adaptador habla el dialecto OpenAI (`POST /v1/chat/completions`), que es el
+que exponen vLLM, llama.cpp, Ollama, TGI y LM Studio. Con GPU, vLLM es la
+opción:
+
+```bash
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
+  --port 8080 \
+  --max-model-len 8192 \
+  --limit-mm-per-prompt image=4 \
+  --gpu-memory-utilization 0.90
+```
+
+```env
+INVOICE_EXTRACTOR=local
+INVOICE_LOCAL_URL=http://gpu-interno:8080/v1
+INVOICE_LOCAL_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
+INVOICE_LOCAL_JSON_MODE=json_schema
+```
+
+Qué modelo según lo que haya en el servidor. Son puntos de partida: la decisión
+real la da `make invoice-eval` sobre facturas propias, no esta tabla.
+
+| Servidor | Modelo para empezar | Licencia | Nota |
+|---|---|---|---|
+| GPU 24 GB (RTX 3090/4090, A10) | Qwen2.5-VL-7B-Instruct | Apache 2.0 | El punto dulce; es el valor por defecto |
+| GPU 12-16 GB | Qwen2.5-VL-7B AWQ/GPTQ (4 bit) | Apache 2.0 | Cuantizado entra holgado; pierde poco en esta tarea |
+| GPU 48 GB+ | Qwen2.5-VL-32B / 72B | **verificar** | Mejor en facturas borrosas o a mano |
+| GPU chica o CPU | PaddleOCR-VL, DeepSeek-OCR y similares | Apache 2.0 / MIT | ~1 GB de VRAM, pero **no** rellenan un esquema JSON: hacen OCR a texto y hace falta un segundo paso |
+
+> **Revisa el `LICENSE` del tamaño exacto que descargues, no el de la familia.**
+> Dentro de un mismo modelo las licencias cambian por tamaño: el 7B es Apache
+> 2.0 (uso comercial libre), pero los repos de 3B y 72B apuntan a la licencia
+> propia de Qwen, que no es Apache y puede restringir el uso comercial. Para un
+> SaaS eso no es un detalle. Por eso el valor por defecto es el 7B.
+
+Los modelos especializados en documentos (PaddleOCR-VL, DeepSeek-OCR,
+Granite-Docling) son otra familia: pesan una fracción y corren en casi
+cualquier cosa, pero están hechos para convertir el documento en texto o
+markdown, no para rellenar un esquema JSON a partir de un prompt. Encajarlos
+aquí es un adaptador más —OCR a texto, y el texto a JSON con un modelo de
+texto chico o con reglas— y es el camino si el servidor no tiene GPU.
+
+Lo que **no** conviene es entrenar un modelo de visión desde cero. Lo que sí
+tiene sentido, cuando haya corpus, es afinar (LoRA) uno de estos sobre nuestras
+propias facturas: los mismos proveedores, los mismos formatos, mes tras mes. De
+ahí sale la ventaja real, y para eso existe el corpus de la sección siguiente.
+
+### Las tres cosas que hacen usable un modelo de 7B
+
+Ninguna es el modelo, y las tres están en el adaptador:
+
+1. **Decodificación guiada** (`INVOICE_LOCAL_JSON_MODE=json_schema`). El
+   esquema JSON se manda forzado —`response_format` y `guided_json`, porque
+   según la versión vLLM mira uno u otro— y el modelo deja de inventar campos.
+   Sin esto, el mismo modelo falla muchas facturas por formato, no por lectura.
+   Si el servidor no soporta `json_schema`, `json_object` manda el esquema en el
+   prompt y el adaptador sabe desenvolver un ```json``` si llega envuelto.
+2. **Temperatura 0.** Leer no es escribir: la misma factura tiene que dar el
+   mismo resultado dos veces, o la revisión deja de ser auditable.
+3. **Imágenes acotadas.** El rasterizador rota según EXIF (una foto de celular
+   viene acostada en los bytes) y recorta al lado largo
+   (`INVOICE_MAX_IMAGE_SIDE=1600`). El costo de un modelo de visión es por
+   píxel: mandar los 12 megapíxeles completos es pagar cuatro veces por leer lo
+   mismo, y en una GPU propia es la diferencia entre dos segundos y diez.
+
+Los PDF de facturación electrónica se rasterizan con pdfium, hasta
+`INVOICE_MAX_PAGES` hojas, y van como una sola factura en el mismo mensaje.
+
+### El modelo transcribe, no interpreta
+
+El prompt pide las cifras **como texto**, tal como están impresas ("15.000",
+"2,5"), y quien las vuelve números es el mismo `to_decimal` del importador de
+Excel. Pedirle números al modelo sería pedirle que adivine si 15.000 son quince
+mil o quince: decisión ya resuelta y probada en `coercion.py`, y que un modelo
+pequeño resuelve mal con frecuencia.
+
+Por el mismo motivo el adaptador es tolerante con lo que no cambia el
+significado: un modelo chico devuelve `"quantity": 2` en vez de `"2"`, o una
+confianza de `95` en vez de `0.95`. Eso se acomoda; perder la factura entera por
+una comilla sería absurdo. Lo que **no** se acomoda es lo ilegible: una cantidad
+que no se pudo leer queda en 1 con advertencia, y un costo ilegible queda en 0
+con advertencia, porque inventar un precio sí falsea la compra.
+
+### Medir y afinar: el corpus
+
+Cada escaneo confirmado guarda tres cosas, y juntas valen más que el modelo:
+la imagen original, la **lectura cruda** (`extraction.read`) y la versión
+**corregida por quien tenía el papel en la mano**. Eso es un par
+(imagen, JSON correcto) por factura: el formato de entrenamiento de un modelo
+de visión y el de la evaluación, acumulándose solo, sin que nadie etiquete nada
+a propósito.
+
+```bash
+make invoice-corpus out=data/facturas   # exporta los pares ya revisados
+make invoice-eval corpus=data/facturas  # corre el lector configurado y lo puntúa
+```
+
+```json
+{"documents": 42, "read_ok": 42, "clean_readings": "31/42",
+ "header_accuracy": 0.94, "line_accuracy": 0.89,
+ "missed_lines": 7, "extra_lines": 2,
+ "seconds_median": 2.4, "seconds_worst": 6.1}
+```
+
+Cómo leerlo:
+
+- **`line_accuracy`** es el número que importa: un renglón cuenta solo si
+  coinciden descripción, cantidad y costo.
+- **`missed_lines` pesa más que `extra_lines`.** Un renglón inventado salta a la
+  vista en la revisión; uno que falta entra al inventario como mercancía que
+  nunca llegó.
+- **`clean_readings`** es la experiencia real: cuántas facturas no habrían
+  necesitado ni una corrección.
+- La exportación ya trae esos mismos números calculados sobre el tráfico real,
+  comparando la lectura cruda contra lo que la gente corrigió. Es una
+  evaluación gratis que se actualiza todos los días.
+
+Con `INVOICE_EXTRACTOR=claude` y `uv sync --extra claude` el mismo
+`make invoice-eval` corre contra la API de Anthropic con **el mismo prompt y el
+mismo esquema**. Para eso se quedó ese adaptador: para que «el modelo propio ya
+alcanza» sea una medición y no una impresión.
+
+> La exportación recorre empresa por empresa porque las políticas RLS de
+> `invoice_scans` no tienen escape de plataforma: ni este proceso puede leer dos
+> tenants a la vez. Es más código, y es justamente la propiedad que queremos.
+
+### Desarrollo sin GPU y sin red
+
+`INVOICE_EXTRACTOR=text` usa un lector determinista que entiende un `.txt` con
+el formato de abajo. Todo el flujo —emparejar, revisar, confirmar, mover
+inventario— es idéntico, y es lo que usan las pruebas: la suite no habla con
+ningún modelo.
+
+```text
+Proveedor: Distribuidora El Sol
+NIT: 900.123.456-7
+Factura: F-00123
+Fecha: 15/10/2026
+Total: 41.000
+---
+2 | ARROZ DIANA X500GR | 2.500
+3 | ACEITE PREMIER 1L | 12.000 | 7702007037128
+```
+
+---
+
+## 14. Cómo añadir un módulo nuevo
 
 Tomando `products` o `sales` como plantilla:
 
@@ -918,7 +1111,7 @@ Tomando `products` o `sales` como plantilla:
 
 ---
 
-## 14. Errores
+## 15. Errores
 
 Formato único (`BACKEND.md` §38):
 
@@ -932,7 +1125,7 @@ que las traduce a HTTP.
 
 ---
 
-## 15. Decisiones de diseño
+## 16. Decisiones de diseño
 
 - **Dinero en `NUMERIC(18,4)`**, nunca `FLOAT`. `Decimal` en todo el dominio.
 - **Contraseñas con bcrypt**; se rechazan claves de más de 72 bytes en vez de
@@ -1003,12 +1196,21 @@ que las traduce a HTTP.
   quieren costo promedio ponderado en vez de último costo, y eso es una
   decisión del negocio, no un default.
 
-## 16. Lo que falta
+## 17. Lo que falta
 
 - **Adaptador S3.** El puerto, los endpoints y la tabla ya están; falta
   escribir `app/infrastructure/storage/s3.py` y registrarlo en `factory.py`.
   Hasta entonces, la carpeta local necesita un volumen persistente (el compose
   ya trae uno) y no sirve para más de un nodo.
+- **La lectura de facturas está apagada** (`INVOICE_EXTRACTOR=disabled`) hasta
+  que el servidor tenga GPU. El módulo entero —puerto, adaptadores, revisión,
+  compra, corpus, evaluación— está construido y probado; falta el modelo
+  detrás (sección 13).
+- **El modelo propio no está afinado.** Cuando se encienda correrá un modelo
+  abierto tal como viene; la ventaja del corpus propio se materializa cuando
+  haya suficientes facturas revisadas y se haga un LoRA sobre ellas.
+- **La lectura es síncrona.** Ocupa la petición varios segundos. Si crece el
+  volumen, el paso natural es moverla al worker Arq que ya existe.
 - **Imágenes sin procesar.** No se generan miniaturas ni se valida que un
   `image/png` sea realmente un PNG más allá de la cabecera declarada.
 - **Importaciones síncronas**, con un tope de 20.000 filas por archivo. Un

@@ -32,6 +32,10 @@ os.environ.setdefault("APP_ENV", "testing")
 STORAGE_ROOT = Path(tempfile.gettempdir()) / "inventory-saas-test-uploads"
 os.environ.setdefault("STORAGE_ROOT", str(STORAGE_ROOT))
 os.environ.setdefault("MAX_UPLOAD_SIZE_MB", "1")
+# Las facturas se leen con el adaptador determinista: la suite no habla con
+# ningún modelo, no necesita llave y no gasta nada. Lo único que no cubre es la
+# visión, que no se prueba con asserts.
+os.environ.setdefault("INVOICE_EXTRACTOR", "text")
 
 # Cleanup deletes rather than truncates. TRUNCATE ... CASCADE empties *every*
 # table with a foreign key to the target, which would wipe the system roles

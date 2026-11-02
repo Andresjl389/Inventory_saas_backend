@@ -351,8 +351,8 @@ puede crear los suyos.
 |---|---|---|
 | `OWNER` | El dueño que nombra el super admin | Comodín `*`: todo dentro de su empresa |
 | `ADMIN` | Segundo al mando | Todo menos el comodín |
-| `INVENTORY_MANAGER` | Bodega y compras | Catálogo, inventario, compras, reportes |
-| `SELLER` | Mostrador | Ver catálogo y stock, crear ventas, clientes, **fiar y recibir abonos** |
+| `INVENTORY_MANAGER` | Bodega y compras | Catálogo, inventario, compras, **escanear facturas**, reportes |
+| `SELLER` | Mostrador | Ver catálogo y stock, crear ventas, clientes, **fiar y recibir abonos**, ver facturas escaneadas |
 
 Los roles del sistema son **iguales para todas las empresas y nadie los puede
 editar** (`403 SYSTEM_ROLE_IMMUTABLE`). Quien quiera «ADMIN menos algo» crea un
@@ -375,7 +375,7 @@ POST /api/v1/roles
 - Un rol que todavía tiene miembros no se borra (`409 ROLE_IN_USE`).
 - `PATCH` reemplaza la lista de permisos **entera**, no hace merge.
 
-`GET /api/v1/roles/permissions` devuelve los 36 permisos con etiqueta y módulo
+`GET /api/v1/roles/permissions` devuelve los 38 permisos con etiqueta y módulo
 — es lo que necesitas para la pantalla de edición.
 
 | Módulo | Permisos |
@@ -388,6 +388,7 @@ POST /api/v1/roles
 | credit | `credit.read` `credit.manage` |
 | sales | `sales.read` `sales.create` `sales.cancel` |
 | purchases | `purchases.read` `purchases.create` `purchases.cancel` |
+| invoices | `invoices.read` `invoices.scan` |
 | imports | `imports.read` `imports.run` |
 | files | `files.read` `files.write` |
 | reports | `reports.read` |
@@ -789,7 +790,175 @@ Detalles que afectan la UI:
 
 ---
 
-## 12. Archivos e imágenes
+## 12. Escanear la factura del proveedor
+
+> **Hoy esta capacidad viene apagada en el servidor.** `POST /invoices/scans`
+> responde `503 INVOICE_SCANNING_DISABLED` hasta que haya un modelo detrás.
+> Antes de mostrar el botón, consulta `GET /health`:
+>
+> ```json
+> {"status": "ok", "features": {"invoice_scanning": false}}
+> ```
+>
+> Con `false`, oculta la entrada (o déjala visible y deshabilitada con un
+> «próximamente»). El resto de esta sección describe el flujo completo, que ya
+> está construido: cuando la bandera pase a `true` no hay nada que cambiar en
+> el frontend.
+
+La promesa es la de la landing: le tomas una foto a la factura y la mercancía
+entra. La regla que la hace confiable es la contraria a la magia: **ningún
+renglón entra solo**. El lector propone, una persona decide, y solo entonces se
+crea la compra.
+
+```text
+1. POST  /invoices/scans              multipart: file (+ warehouse_id)
+                                      → lee el papel y propone; no escribe nada
+2. PATCH /invoices/scans/{id}         las decisiones de la persona
+   POST  /invoices/scans/{id}/rematch volver a buscar en el catálogo (gratis)
+3. POST  /invoices/scans/{id}/confirm crea los productos nuevos y la compra
+   POST  /invoices/scans/{id}/cancel  descartar el escaneo
+```
+
+Acepta JPG, PNG, WEBP y PDF, con el mismo tope de tamaño que los demás
+archivos (`MAX_UPLOAD_SIZE_MB`). La foto queda guardada como archivo de la
+empresa (`owner_type: "INVOICE"`), así que la factura original siempre se puede
+volver a ver.
+
+### Lo que devuelve el paso 1
+
+```json
+{
+  "id": "…", "status": "EXTRACTED", "filename": "factura.jpg",
+  "supplier_name": "Distribuidora El Sol", "supplier_tax_id": "900.123.456-7",
+  "supplier_id": "…o null si no se pudo resolver con certeza",
+  "warehouse_id": null,
+  "invoice_number": "F-00123", "invoice_date": "2026-10-15",
+  "declared_subtotal": "29000", "declared_tax": null, "declared_total": "41000",
+  "lines_total": "41000", "total_mismatch": "0",
+  "pending_count": 2, "review_count": 2,
+  "extraction": {"source": "local:Qwen/Qwen2.5-VL-7B-Instruct",
+                 "warnings": [], "lines_read": 3, "read": {"…": "la lectura cruda"}},
+  "lines": [
+    {"id": "…", "line_number": 1, "description": "ARROZ DIANA X500GR",
+     "code": null, "quantity": "2", "unit_cost": "2500",
+     "discount": "0", "tax": "0",
+     "total": "5000", "declared_total": "5000", "total_mismatch": "0",
+     "confidence": "1.0",
+     "suggested_product_id": "…", "match_confidence": "0.914", "match_reason": "similar",
+     "action": "LINK", "product_id": "…", "new_product": {}, "warnings": [],
+     "needs_review": false}
+  ]
+}
+```
+
+Dos campos distintos a propósito, y la diferencia es todo el módulo:
+
+- `suggested_product_id` + `match_confidence` + `match_reason` → **lo que el
+  sistema cree**.
+- `action` + `product_id` → **lo que se va a hacer**.
+
+Solo un código de barras, un SKU o un nombre casi idéntico (`match_confidence
+>= 0.9`) pasan de propuesta a decisión sin preguntar. Todo lo demás llega como
+`PENDING`.
+
+### Las cuatro decisiones por renglón
+
+| `action` | Qué significa | Qué pide |
+|---|---|---|
+| `PENDING` | Sin decidir. **Bloquea la confirmación.** | — |
+| `LINK` | Es este producto del catálogo | `product_id` |
+| `CREATE` | Producto nuevo, nace de este renglón | nada; opcional `new_product` |
+| `SKIP` | No es mercancía (flete, bolsas, envase) | — |
+
+```json
+PATCH /invoices/scans/{id}
+{
+  "warehouse_id": "…",
+  "supplier_id": "…",
+  "lines": [
+    {"line_id": "…", "action": "LINK", "product_id": "…", "unit_cost": "2550"},
+    {"line_id": "…", "action": "CREATE",
+     "new_product": {"sale_price": "15000", "category_id": "…"}},
+    {"line_id": "…", "action": "SKIP"}
+  ]
+}
+```
+
+- **Los renglones que no mandes quedan como están.** Una factura de cuarenta
+  renglones se revisa en varias pasadas.
+- La misma llamada corrige cifras: `quantity`, `unit_cost`, `discount`, `tax`,
+  `description`. Es lo normal cuando la foto salió borrosa.
+- `status` pasa a `REVIEWED` **solo** cuando `pending_count` llega a 0. Lo dice
+  el trabajo que falta, no el botón que se apretó.
+- `CREATE` sin `new_product`: el nombre sale de la descripción impresa, el SKU
+  se genera y el costo lo pone la factura. El precio de venta queda en **0** —
+  inventarlo sería peor que dejarlo visible.
+
+### Cómo renderizar la revisión
+
+- **Una fila por renglón, en el orden del papel** (`line_number`): quien revisa
+  tiene la factura al lado.
+- **`needs_review: true` → marca visual.** Es verdad cuando está `PENDING`,
+  cuando se enlazó con confianza media, cuando hay `warnings`, o cuando
+  `total_mismatch != 0`.
+- **`warnings` por renglón** son lo que el lector no pudo leer («cantidad
+  ilegible: se asumió 1, confírmala»). Píntalos; son la mitad del valor.
+- **`total` vs `declared_total`**: el primero es la cuenta, el segundo lo que
+  decía el papel. Si no coinciden, el renglón se leyó mal.
+- **`total_mismatch` del encabezado** no siempre es un error: un flete
+  descartado explica la diferencia. Enséñalo como aviso, no como bloqueo.
+- **`match_reason`** da el texto del «por qué»: `barcode`, `sku`, `exact`,
+  `contains`, `similar`, `unmatched`.
+
+### Confirmar
+
+```json
+POST /invoices/scans/{id}/confirm
+{"complete": true, "update_product_costs": false}
+→ {"scan": {…"status": "CONFIRMED", "purchase_id": "…"},
+   "purchase": {…}, "created_product_ids": ["…"]}
+```
+
+`complete: true` (el valor por defecto) completa la compra y **mueve el
+inventario** por el mismo camino que una compra escrita a mano: mismos
+movimientos, mismas validaciones. Con `false` queda en `DRAFT` para completarla
+después desde Compras. `update_product_costs` refresca el costo de cada
+producto con lo que dice la factura; está apagado por defecto porque muchos
+negocios quieren promedio ponderado y no último costo.
+
+Un escaneo confirmado es definitivo (`SCAN_NOT_OPEN`); para deshacerlo se
+cancela la compra, que devuelve el stock.
+
+### Errores propios del módulo
+
+| Código | HTTP | Cuándo |
+|---|---|---|
+| `UNDECIDED_LINES` | 422 | Queda algún renglón `PENDING`. `details.pending` dice cuántos |
+| `WAREHOUSE_REQUIRED` | 422 | Falta decir a qué bodega entra |
+| `NOTHING_TO_PURCHASE` | 422 | Todos los renglones quedaron en `SKIP` |
+| `EMPTY_INVOICE` | 422 | El documento no traía renglones (`details.warnings` explica) |
+| `UNSUPPORTED_INVOICE_FILE` | 422 | No es foto ni PDF |
+| `INVOICE_EXTRACTION_FAILED` | 422 | La lectura falló o el documento es ilegible |
+| `SCAN_NOT_OPEN` | 422 | El escaneo ya se confirmó o se canceló |
+| `INVOICE_SCANNING_DISABLED` | 503 | El servidor no tiene modelo configurado todavía (ver `GET /health`) |
+
+### Detalles que afectan la UI
+
+- **La lectura es síncrona y tarda.** Varios segundos para una factura normal.
+  Pon un estado de carga que aguante y un reintento visible; no un spinner de
+  tres segundos.
+- **`rematch` es gratis** (no vuelve a leer la foto) y nunca deshace una
+  decisión. Es el botón para después de crear a mano los productos que
+  faltaban.
+- **El proveedor se resuelve solo únicamente con coincidencia exacta** de NIT o
+  de nombre normalizado. Si viene `supplier_id: null` con `supplier_name`
+  lleno, ofrece el selector o un «crear proveedor» con ese nombre precargado.
+- **Permisos**: `invoices.read` para ver, `invoices.scan` para escanear,
+  revisar y confirmar.
+
+---
+
+## 13. Archivos e imágenes
 
 ```http
 POST   /api/v1/files          multipart: file, owner_type, owner_id
@@ -825,7 +994,7 @@ la ruta.
 
 ---
 
-## 13. La consola del super admin
+## 14. La consola del super admin
 
 Rutas `/api/v1/admin/*`. **No llevan `X-Company-ID`**: la empresa va en la ruta.
 
@@ -920,7 +1089,7 @@ primero.
 
 ---
 
-## 14. Mapa de pantallas
+## 15. Mapa de pantallas
 
 ### App del negocio
 
@@ -943,6 +1112,8 @@ primero.
 | Clientes / Proveedores | `/customers`, `/suppliers` | `customers.*` / `suppliers.*` |
 | **Equipo** | `GET /companies/current/members`, `GET /roles`, `POST /companies/current/members` | `members.read` / `.manage` |
 | **Roles** | `GET /roles`, `GET /roles/permissions`, `POST PATCH DELETE /roles` | `roles.read` / `.manage` |
+| **Escanear factura** | `POST /invoices/scans` → `PATCH` → `confirm` | `invoices.scan` |
+| Facturas escaneadas | `GET /invoices/scans?status=` | `invoices.read` |
 | Importar | `GET /imports/schemas` + el flujo de 4 pasos | `imports.run` |
 | Reportes | `/reports/*` | `reports.read` |
 | Auditoría | `GET /reports/audit` | `audit.read` |
@@ -966,7 +1137,7 @@ Las dos en negrita son las del administrador de empresa.
 
 ---
 
-## 15. Cliente de ejemplo (TypeScript)
+## 16. Cliente de ejemplo (TypeScript)
 
 Resuelve las tres cosas que se repiten: la cabecera de empresa, el refresco de
 token y la envoltura de error.
@@ -1074,7 +1245,7 @@ export const formatMoney = (value: string, currency = "COP") =>
 
 ---
 
-## 16. Entorno de desarrollo
+## 17. Entorno de desarrollo
 
 ```bash
 docker compose up --build            # api, postgres, redis, worker
@@ -1091,6 +1262,36 @@ Para tener una empresa con datos: crea el super admin, aprovisiona una empresa
 con `POST /admin/companies`, baja `GET /imports/templates/PRODUCTS`, llénala y
 súbela.
 
+### Leer facturas en desarrollo
+
+Las facturas las lee **nuestro propio modelo**, en nuestro servidor
+(`INVOICE_EXTRACTOR=local` apuntando a un endpoint compatible con OpenAI). Para
+el frontend eso no cambia nada: el flujo, los campos y los errores son los
+mismos; solo cambia `extraction.source`. Para trabajar sin GPU y sin red:
+
+```env
+INVOICE_EXTRACTOR=text        # lector determinista (el de las pruebas)
+```
+
+Con él, `POST /invoices/scans` acepta un `.txt` con este formato y el resto del
+flujo es idéntico:
+
+```text
+Proveedor: Distribuidora El Sol
+NIT: 900.123.456-7
+Factura: F-00123
+Fecha: 15/10/2026
+Total: 41.000
+---
+2 | ARROZ DIANA X500GR | 2.500
+3 | ACEITE PREMIER 1L | 12.000 | 7702007037128
+```
+
+Los detalles de infraestructura —qué modelo, en qué GPU, cómo medirlo— están
+en la sección 13 del README del backend. Lo único que el frontend necesita
+saber es que la lectura tarda unos segundos y puede fallar con
+`INVOICE_EXTRACTION_FAILED` si el servidor del modelo está caído.
+
 ### CORS
 
 ```env
@@ -1102,7 +1303,7 @@ llegar a la API. `X-Request-ID` está expuesto como cabecera de respuesta.
 
 ---
 
-## 17. Limitaciones que afectan al frontend
+## 18. Limitaciones que afectan al frontend
 
 Cosas que el backend todavía no hace y conviene saber **antes** de diseñar.
 
@@ -1110,9 +1311,11 @@ Cosas que el backend todavía no hace y conviene saber **antes** de diseñar.
 |---|---|
 | Sin tiempo real | Ni websockets ni SSE. Polling para notificaciones. |
 | El logout no revoca | Un access token robado sirve 15 minutos más. |
-| Las imágenes requieren autenticación | No sirve `<img src>` directo; hay que usar blobs (§12). |
+| Las imágenes requieren autenticación | No sirve `<img src>` directo; hay que usar blobs (§13). |
 | Sin invitaciones por correo | Quien da de alta fija la contraseña y la entrega. Nada verifica el correo. |
 | Sin numeración consecutiva | Ventas y compras se identifican por UUID. «Factura #0001» no existe. |
 | Importaciones síncronas | Tope de 20.000 filas; una carga grande bloquea la petición. |
+| El escaneo de facturas está apagado | `503 INVOICE_SCANNING_DISABLED` hasta que el servidor tenga GPU. Mírala en `GET /health`. |
+| El escaneo de facturas es síncrono | Cuando se encienda, la lectura tarda varios segundos y ocupa la petición. |
 | Las cuotas de plan no bloquean | `max_users`, `max_products`, `max_warehouses` se muestran pero no impiden crear. |
 | El registro público sigue abierto | Crea cuentas sin empresa. Si no lo quieres, quitar la ruta es un cambio chico. |

@@ -241,3 +241,28 @@ async def balance_of(client, hdrs: dict, customer_id: str) -> Decimal:
     response = await client.get(f"/api/v1/credit/accounts/{customer_id}", headers=hdrs)
     assert response.status_code == 200, response.text
     return Decimal(response.json()["balance"])
+
+
+INVOICE_MEDIA_TYPE = "text/plain"
+
+
+async def scan_invoice(
+    client,
+    hdrs: dict,
+    document: str,
+    *,
+    warehouse_id: str | None = None,
+    filename: str = "factura.txt",
+):
+    """Subir una factura al lector de texto (el que usan las pruebas)."""
+    data = {"warehouse_id": warehouse_id} if warehouse_id else {}
+    return await client.post(
+        "/api/v1/invoices/scans",
+        headers=hdrs,
+        files={"file": (filename, document.encode(), INVOICE_MEDIA_TYPE)},
+        data=data,
+    )
+
+
+def line_by_description(scan: dict, needle: str) -> dict:
+    return next(line for line in scan["lines"] if needle.lower() in line["description"].lower())

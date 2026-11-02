@@ -21,6 +21,9 @@ class FileOwnerType(StrEnum):
     SALE = "SALE"
     PURCHASE = "PURCHASE"
     IMPORT = "IMPORT"
+    # La foto o el PDF de una factura de compra que se escaneó. No apunta a la
+    # compra: cuando se sube todavía no existe ninguna.
+    INVOICE = "INVOICE"
     EXPORT = "EXPORT"
     REPORT = "REPORT"
 

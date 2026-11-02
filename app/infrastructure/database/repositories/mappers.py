@@ -15,6 +15,7 @@ from app.domain.imports.entities.import_job import ImportJob, ImportRowError
 from app.domain.inventory.entities.product_stock import ProductStock
 from app.domain.inventory.entities.stock_movement import StockMovement
 from app.domain.inventory.entities.warehouse import Warehouse
+from app.domain.invoices.entities.scan import InvoiceScan, ScanLine
 from app.domain.notifications.entities.notification import Notification
 from app.domain.products.entities.category import Category
 from app.domain.products.entities.product import Product
@@ -35,6 +36,10 @@ from app.infrastructure.database.models.inventory import (
     ProductStockModel,
     StockMovementModel,
     WarehouseModel,
+)
+from app.infrastructure.database.models.invoice import (
+    InvoiceScanLineModel,
+    InvoiceScanModel,
 )
 from app.infrastructure.database.models.partner import CustomerModel, SupplierModel
 from app.infrastructure.database.models.platform import (
@@ -417,4 +422,59 @@ def customer_balance_to_domain(model: CustomerBalanceModel) -> CustomerBalance:
         company_id=model.company_id,
         customer_id=model.customer_id,
         balance=model.balance,
+    )
+
+
+def invoice_scan_line_to_domain(model: InvoiceScanLineModel) -> ScanLine:
+    return ScanLine(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        company_id=model.company_id,
+        scan_id=model.scan_id,
+        line_number=model.line_number,
+        description=model.description,
+        code=model.code,
+        unit=model.unit,
+        quantity=model.quantity,
+        unit_cost=model.unit_cost,
+        discount=model.discount,
+        tax=model.tax,
+        declared_total=model.declared_total,
+        confidence=model.confidence,
+        suggested_product_id=model.suggested_product_id,
+        match_confidence=model.match_confidence,
+        match_reason=model.match_reason,
+        action=model.action,
+        product_id=model.product_id,
+        new_product=dict(model.new_product or {}),
+        warnings=[str(item) for item in (model.warnings or [])],
+    )
+
+
+def invoice_scan_to_domain(model: InvoiceScanModel) -> InvoiceScan:
+    return InvoiceScan(
+        id=model.id,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+        company_id=model.company_id,
+        file_id=model.file_id,
+        filename=model.filename,
+        status=model.status,
+        supplier_name=model.supplier_name,
+        supplier_tax_id=model.supplier_tax_id,
+        supplier_id=model.supplier_id,
+        warehouse_id=model.warehouse_id,
+        invoice_number=model.invoice_number,
+        invoice_date=model.invoice_date,
+        currency=model.currency,
+        declared_subtotal=model.declared_subtotal,
+        declared_tax=model.declared_tax,
+        declared_total=model.declared_total,
+        notes=model.notes,
+        extraction=dict(model.extraction or {}),
+        purchase_id=model.purchase_id,
+        created_by=model.created_by,
+        failure_reason=model.failure_reason,
+        lines=[invoice_scan_line_to_domain(line) for line in model.lines],
     )

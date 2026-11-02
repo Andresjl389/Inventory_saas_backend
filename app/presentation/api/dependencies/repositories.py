@@ -13,6 +13,7 @@ from app.application.credit.services.credit_service import CreditService
 from app.application.inventory.services.stock_service import StockService
 from app.domain.files.storage import FileStorage
 from app.domain.imports.table import SpreadsheetReader
+from app.domain.invoices.extraction import InvoiceExtractor
 from app.infrastructure.database.repositories.audit_repository import SqlAlchemyAuditRepository
 from app.infrastructure.database.repositories.billing_repository import (
     SqlAlchemyPlanRepository,
@@ -32,6 +33,9 @@ from app.infrastructure.database.repositories.credit_repository import SqlAlchem
 from app.infrastructure.database.repositories.file_repository import SqlAlchemyFileRepository
 from app.infrastructure.database.repositories.import_repository import (
     SqlAlchemyImportJobRepository,
+)
+from app.infrastructure.database.repositories.invoice_repository import (
+    SqlAlchemyInvoiceScanRepository,
 )
 from app.infrastructure.database.repositories.notification_repository import (
     SqlAlchemyNotificationRepository,
@@ -63,6 +67,7 @@ from app.infrastructure.database.repositories.warehouse_repository import (
 )
 from app.infrastructure.database.unit_of_work import SqlAlchemyUnitOfWork
 from app.infrastructure.imports.reader import OpenpyxlSpreadsheetReader
+from app.infrastructure.invoices.factory import get_invoice_extractor
 from app.infrastructure.storage.factory import get_file_storage
 from app.presentation.api.dependencies.database import SessionDep
 
@@ -174,6 +179,16 @@ def get_loader_repositories(session: SessionDep) -> dict:
     }
 
 
+def get_invoice_scan_repository(session: SessionDep) -> SqlAlchemyInvoiceScanRepository:
+    return SqlAlchemyInvoiceScanRepository(session)
+
+
+def get_extractor() -> InvoiceExtractor:
+    """El lector de facturas. Cacheado, así que el cliente del modelo se arma
+    una sola vez."""
+    return get_invoice_extractor()
+
+
 def get_spreadsheet_reader() -> SpreadsheetReader:
     return OpenpyxlSpreadsheetReader()
 
@@ -252,5 +267,9 @@ CompanyOverviewDep = Annotated[
     SqlAlchemyCompanyOverviewRepository, Depends(get_company_overview_repository)
 ]
 SpreadsheetReaderDep = Annotated[SpreadsheetReader, Depends(get_spreadsheet_reader)]
+InvoiceScanRepoDep = Annotated[
+    SqlAlchemyInvoiceScanRepository, Depends(get_invoice_scan_repository)
+]
+InvoiceExtractorDep = Annotated[InvoiceExtractor, Depends(get_extractor)]
 CreditRepoDep = Annotated[SqlAlchemyCreditRepository, Depends(get_credit_repository)]
 CreditServiceDep = Annotated[CreditService, Depends(get_credit_service)]

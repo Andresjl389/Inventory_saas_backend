@@ -34,6 +34,12 @@ sweep-files: ## Delete stored blobs no database row points at
 low-stock: ## Run the low-stock sweep once, now
 	uv run python -c "import asyncio; from app.infrastructure.jobs.low_stock import sweep_low_stock; print(asyncio.run(sweep_low_stock()))"
 
+invoice-corpus: ## Export reviewed invoices as training data: make invoice-corpus out=data/facturas
+	uv run python -m app.cli export-invoice-corpus --out $(out)
+
+invoice-eval: ## Score the configured invoice reader against a corpus: make invoice-eval corpus=data/facturas
+	uv run python -m app.cli eval-invoices --corpus $(corpus)
+
 worker: ## Run the Arq worker
 	uv run arq app.infrastructure.jobs.worker.WorkerSettings
 
@@ -56,4 +62,4 @@ format: ## Auto-format
 	uv run ruff format app tests alembic
 	uv run ruff check --fix app tests alembic
 
-.PHONY: help install up down stack migrate downgrade revision superuser sweep-files low-stock worker run test test-db lint format
+.PHONY: help install up down stack migrate downgrade revision superuser sweep-files low-stock invoice-corpus invoice-eval worker run test test-db lint format

@@ -35,9 +35,13 @@ def timestamps() -> tuple[sa.Column, sa.Column]:
     return created_at(), updated_at()
 
 
-def money_column(name: str, *, default: str | None = "0") -> sa.Column:
-    """`default=None` for amounts the caller must always supply (unit prices)."""
-    return sa.Column(name, MONEY, nullable=False, server_default=default)
+def money_column(name: str, *, default: str | None = "0", nullable: bool = False) -> sa.Column:
+    """`default=None` for amounts the caller must always supply (unit prices).
+
+    `nullable=True` is for amounts where "no value" is itself information --
+    the total a scanned invoice line did not print, which is not zero.
+    """
+    return sa.Column(name, MONEY, nullable=nullable, server_default=default)
 
 
 def quantity_column(name: str, *, nullable: bool = False, default: str | None = None) -> sa.Column:

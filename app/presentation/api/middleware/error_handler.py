@@ -25,7 +25,11 @@ def _error_response(status_code: int, code: str, message: str, details: dict | N
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
-        if exc.status_code >= 500:
+        if exc.status_code == 503:
+            # Una capacidad apagada o una dependencia caída es operación
+            # normal, no un defecto: queda el registro, sin traza.
+            logger.warning("service unavailable", extra={"code": exc.code})
+        elif exc.status_code >= 500:
             logger.exception("unhandled application error", exc_info=exc)
         return _error_response(exc.status_code, exc.code, exc.message, exc.details)
 

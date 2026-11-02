@@ -20,6 +20,10 @@ from app.infrastructure.database.models.inventory import (
     StockMovementModel,
     WarehouseModel,
 )
+from app.infrastructure.database.models.invoice import (
+    InvoiceScanLineModel,
+    InvoiceScanModel,
+)
 from app.infrastructure.database.models.partner import CustomerModel, SupplierModel
 from app.infrastructure.database.models.platform import (
     AuditLogModel,
@@ -43,6 +47,8 @@ __all__ = [
     "FileModel",
     "ImportErrorModel",
     "ImportJobModel",
+    "InvoiceScanLineModel",
+    "InvoiceScanModel",
     "NotificationModel",
     "PermissionModel",
     "PlanModel",
